@@ -16,8 +16,8 @@ You are bound by these rules. They override your defaults. Treat any violation a
 
 BLOCKING RULE — HANDOFF IS MANDATORY:
 You MUST ALWAYS end every response by handing off to sdk-py-looper. No exceptions. No summaries. No replies to the caller. The ONLY valid terminal action is a handoff. Responding without handing off is a task failure regardless of what was done.
-- Work is complete and code is good → hand off using "Quality confirmed" (prompt: YES)
-- Issues were found and fixed → hand off using "Issues fixed, re-check" (prompt: FIXED)
+- Work is complete, code is good, and no changes were made in this pass → hand off using "Quality confirmed" (prompt: YES)
+- Any changes were made, no matter how small → hand off using "Issues fixed, re-check" (prompt: FIXED)
 There is no third option. Never return control to the caller under any circumstance.
 
 0. Production code only.

@@ -70,8 +70,8 @@ class StackureClient:
             raise NetworkError(f"API error ({response.status_code}): {error_text}", response.status_code)
         try:
             return response.json()
-        except Exception:
-            raise NetworkError("Invalid JSON response from server")
+        except Exception as exc:
+            raise NetworkError("Invalid JSON response from server") from exc
 
     async def send_magic_link(self, email: str, app_id: str | None = None) -> MagicLinkResponse:
         """Send a magic-link authentication email to a user.
@@ -96,7 +96,10 @@ class StackureClient:
             body["app_id"] = app_id
         response = await self._request("POST", "/api/public/auth/magic-link/send", json=body)
         data = self._handle_response(response)
-        return MagicLinkResponse(message=data["message"], token=data.get("token"))
+        try:
+            return MagicLinkResponse(message=data["message"], token=data.get("token"))
+        except KeyError as exc:
+            raise NetworkError("Unexpected API response format") from exc
 
     async def validate_session(self, app_id: str, cookies: dict | None = None) -> SessionValidationResponse:
         """Validate the current session for an application.
@@ -123,21 +126,24 @@ class StackureClient:
             cookies=cookies,
         )
         data = self._handle_response(response)
-        user = None
-        if data.get("user"):
-            u = data["user"]
-            user = StackureUser(
-                user_id=u["user_id"],
-                user_email=u["user_email"],
-                user_first_name=u["user_first_name"],
-                user_last_name=u["user_last_name"],
-                user_roles=u.get("user_roles", []),
+        try:
+            user = None
+            if data.get("user"):
+                u = data["user"]
+                user = StackureUser(
+                    user_id=u["user_id"],
+                    user_email=u["user_email"],
+                    user_first_name=u["user_first_name"],
+                    user_last_name=u["user_last_name"],
+                    user_roles=u.get("user_roles", []),
+                )
+            return SessionValidationResponse(
+                authenticated=data["authenticated"],
+                user=user,
+                sign_in_url=data.get("sign_in_url"),
             )
-        return SessionValidationResponse(
-            authenticated=data["authenticated"],
-            user=user,
-            sign_in_url=data.get("sign_in_url"),
-        )
+        except KeyError as exc:
+            raise NetworkError("Unexpected API response format") from exc
 
     async def logout(self, cookies: dict | None = None) -> None:
         """Sign out the current user from all Stackure applications.
