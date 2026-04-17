@@ -1,6 +1,6 @@
 # Stackure Python SDK
 
-[![CI](https://github.com/syi-stackure/sdk-py/actions/workflows/ci.yml/badge.svg)](https://github.com/syi-stackure/sdk-py/actions/workflows/ci.yml)
+[![Check build](https://github.com/syi-stackure/sdk-py/actions/workflows/check-build.yml/badge.svg)](https://github.com/syi-stackure/sdk-py/actions/workflows/check-build.yml)
 [![PyPI version](https://img.shields.io/pypi/v/stackure.svg)](https://pypi.org/project/stackure/)
 [![Python versions](https://img.shields.io/pypi/pyversions/stackure.svg)](https://pypi.org/project/stackure/)
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/stackure.svg)](https://pypi.org/project/stackure/)
