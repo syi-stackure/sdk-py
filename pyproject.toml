@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stackure"
-version = "1.0.0"
+version = "0.0.0"
 description = "Official Stackure authentication SDK for Python"
 readme = "README.md"
 requires-python = ">=3.10"
