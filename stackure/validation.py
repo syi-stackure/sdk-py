@@ -2,7 +2,7 @@
 
 import re
 
-from .errors import ValidationError
+from .errors import StackureError
 
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _UUID_RE = re.compile(
@@ -12,33 +12,19 @@ _UUID_RE = re.compile(
 
 
 def validate_email(email: str) -> None:
-    """Validate that a string is a well-formed email address.
-
-    Args:
-        email: The email address to validate.
-
-    Raises:
-        ValidationError: If ``email`` is empty, not a string, or malformed.
-    """
+    """Raise a ``"validation"``-coded :class:`StackureError` if ``email`` is malformed."""
     if not email or not isinstance(email, str):
-        raise ValidationError("Email is required and must be a string")
+        raise StackureError("validation", "email is required")
     if not _EMAIL_RE.match(email):
-        raise ValidationError("Invalid email format")
+        raise StackureError("validation", "invalid email format")
 
 
 def validate_uuid(value: str, field_name: str = "UUID") -> None:
-    """Validate that a string is a valid UUID v4.
-
-    Args:
-        value: The UUID string to validate.
-        field_name: Human-readable field label used in error messages.
-
-    Raises:
-        ValidationError: If ``value`` is empty, not a string, or not a valid UUID v4.
-    """
+    """Raise a ``"validation"``-coded :class:`StackureError` if ``value`` isn't a UUID v4."""
     if not value or not isinstance(value, str):
-        raise ValidationError(f"{field_name} is required and must be a string")
+        raise StackureError("validation", f"{field_name} is required")
     if not _UUID_RE.match(value):
-        raise ValidationError(f"Invalid {field_name} format (must be a valid UUID)")
-
-
+        raise StackureError(
+            "validation",
+            f"invalid {field_name} format (must be a valid UUID)",
+        )
