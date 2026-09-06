@@ -1,150 +1,194 @@
-"""Internal HTTP layer for the Stackure SDK.
+"""HTTP layer for the Stackure SDK. Standard library only."""
 
-Consumers should use the module-level ``send_magic_link`` and ``logout``
-functions re-exported from ``stackure``; they go through this layer.
-"""
-
-import asyncio
+import json
 import os
-
-import httpx
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any
 
 from .errors import StackureError
-from .types import MagicLinkResponse, User
+from .types import MagicLinkResponse, Request, Session, User
 from .validation import validate_email, validate_uuid
 
 _DEFAULT_BASE_URL = "https://stackure.com"
-_REQUEST_TIMEOUT_S = 10.0
-_MAX_RETRIES = 2
+_REQUEST_TIMEOUT_S = 2.0
+_MAX_RETRIES = 1
+_RETRY_DELAY_S = 0.5
+
+SESSION_COOKIE = "session"
+TOKEN_PARAM = "session_token"
 
 
-def _base_url() -> str:
-    """Resolve the base URL from ``STACKURE_BASE_URL`` or fall back to production."""
+def base_url() -> str:
+    """Resolve ``STACKURE_BASE_URL`` from the environment, else production."""
     env = os.environ.get("STACKURE_BASE_URL")
     return env.rstrip("/") if env else _DEFAULT_BASE_URL
 
 
-async def _request(method: str, path: str, **kwargs) -> httpx.Response:
-    """Perform an HTTP request with retry + timeout.
-
-    Retries 5xx responses twice with exponential backoff (500ms, 1s). Timeouts
-    are never retried — a second attempt would obscure real latency.
-    """
-    url = f"{_base_url()}{path}"
-    last_error: Exception | None = None
-
-    for attempt in range(_MAX_RETRIES + 1):
-        if attempt > 0:
-            await asyncio.sleep(0.5 * (2 ** (attempt - 1)))
-        try:
-            async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_S) as http_client:
-                response = await http_client.request(method, url, **kwargs)
-            if response.status_code >= 500 and attempt < _MAX_RETRIES:
-                last_error = StackureError(
-                    "network",
-                    f"Server error ({response.status_code})",
-                    response.status_code,
-                )
-                continue
-            return response
-        except httpx.TimeoutException as exc:
-            raise StackureError(
-                "timeout",
-                f"Request timed out after {_REQUEST_TIMEOUT_S}s",
-            ) from exc
-        except httpx.RequestError as exc:
-            last_error = StackureError("network", f"Network request failed: {exc}")
-
-    raise last_error or StackureError("network", "Request failed after retries")
-
-
-def _handle_response(response: httpx.Response) -> dict:
-    """Return parsed JSON or raise a typed :class:`StackureError` for non-2xx."""
-    if not response.is_success:
-        try:
-            error_text = response.text
-        except Exception:
-            error_text = "unknown error"
-        if response.status_code == 401:
-            raise StackureError("auth", error_text or "Authentication failed", 401)
-        if response.status_code == 403:
-            raise StackureError("forbidden", error_text or "Access forbidden", 403)
-        raise StackureError(
-            "network",
-            f"API error ({response.status_code}): {error_text}",
-            response.status_code,
-        )
+def _handle_response(status: int, raw: bytes) -> Any:
+    text = raw.decode("utf-8", "replace")
+    if not 200 <= status < 300:
+        body = text or "unknown error"
+        if status == 401:
+            raise StackureError("auth", body, 401)
+        if status == 403:
+            raise StackureError("forbidden", body, 403)
+        raise StackureError("network", f"api error ({status}): {body}", status)
     try:
-        return response.json()
-    except Exception as exc:
-        raise StackureError("network", "Invalid JSON response from server") from exc
+        return json.loads(text)
+    except ValueError as exc:
+        raise StackureError("network", "invalid JSON response from server", status) from exc
 
 
-async def send_magic_link(email: str, app_id: str | None = None) -> MagicLinkResponse:
-    """Send a passwordless sign-in email to a user.
+def _request(
+    method: str,
+    path: str,
+    *,
+    body: Any = None,
+    query: dict[str, str] | None = None,
+    token: str = "",
+    ua: str = "",
+    ip: str = "",
+) -> Any:
+    url = base_url() + path
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    if ua:
+        headers["User-Agent"] = ua
+    if ip:
+        headers["X-Forwarded-For"] = ip
+    if token:
+        headers["Cookie"] = f"{SESSION_COOKIE}={token}"
+
+    last: StackureError | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        if attempt:
+            time.sleep(_RETRY_DELAY_S)
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
+                return _handle_response(resp.status, resp.read())
+        except urllib.error.HTTPError as exc:
+            payload = exc.read()
+            if exc.code >= 500 and attempt < _MAX_RETRIES:
+                last = StackureError("network", f"server error ({exc.code})", exc.code)
+                continue
+            return _handle_response(exc.code, payload)
+        except TimeoutError as exc:
+            raise StackureError(
+                "timeout", f"request timed out after {_REQUEST_TIMEOUT_S}s"
+            ) from exc
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                raise StackureError(
+                    "timeout", f"request timed out after {_REQUEST_TIMEOUT_S}s"
+                ) from exc
+            last = StackureError("network", f"network request failed: {exc.reason}")
+
+    raise last or StackureError("network", "request failed after retries")
+
+
+def client_ip(request: Request) -> str:
+    """The client's address: first ``X-Forwarded-For`` entry, else the peer."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr
+
+
+def cookie(request: Request, name: str) -> str:
+    """Read a single cookie off ``request``, or ``""`` if absent."""
+    for part in request.headers.get("cookie", "").split(";"):
+        key, sep, value = part.partition("=")
+        if sep and key.strip() == name:
+            return value.strip()
+    return ""
+
+
+def query_param(request: Request, name: str) -> str:
+    """Read a single query-string parameter, or ``""`` if absent."""
+    return urllib.parse.parse_qs(request.query).get(name, [""])[0]
+
+
+def session_token(request: Request) -> str:
+    """The session token: handoff query parameter first, then the cookie."""
+    return query_param(request, TOKEN_PARAM) or cookie(request, SESSION_COOKIE)
+
+
+def _user(data: Any) -> User | None:
+    if not data:
+        return None
+    try:
+        return User(
+            user_id=data["user_id"],
+            user_email=data["user_email"],
+            user_first_name=data["user_first_name"],
+            user_last_name=data["user_last_name"],
+            user_permissions=data.get("user_permissions") or [],
+        )
+    except (KeyError, TypeError) as exc:
+        raise StackureError("network", "unexpected user payload format") from exc
+
+
+def send_magic_link(email: str, app_id: str | None = None) -> MagicLinkResponse:
+    """Send a passwordless sign-in email.
 
     Args:
         email: Recipient's email address.
         app_id: Your Stackure application UUID. Optional.
 
     Returns:
-        :class:`MagicLinkResponse` with the API's confirmation message.
+        The API's confirmation message.
 
     Raises:
-        StackureError: With ``code`` in ``{"validation", "network", "timeout", "auth"}``.
+        StackureError: ``code`` is one of ``"validation"``, ``"auth"``,
+            ``"forbidden"``, ``"timeout"``, ``"network"``.
+
+    Example:
+        >>> send_magic_link("user@example.com", app_id).message
+        'Magic link sent'
     """
     validate_email(email)
+
+    body: dict[str, str] = {"user_email": email}
     if app_id:
         validate_uuid(app_id, "App ID")
-    body: dict = {"user_email": email}
-    if app_id:
         body["app_id"] = app_id
-    response = await _request("POST", "/api/public/auth/magic-link/send", json=body)
-    data = _handle_response(response)
+
+    data = _request("POST", "/api/public/auth/magic-link/send", body=body)
     try:
         return MagicLinkResponse(message=data["message"])
-    except KeyError as exc:
-        raise StackureError("network", "Unexpected API response format") from exc
+    except (KeyError, TypeError) as exc:
+        raise StackureError("network", "unexpected API response format") from exc
 
 
-async def _validate_session(app_id: str, cookies: dict | None = None) -> dict:
-    """Internal helper: validate a session and return the raw API response dict."""
-    validate_uuid(app_id, "App ID")
-    response = await _request(
-        "GET",
-        "/api/public/auth/session/validate",
-        params={"app_id": app_id},
-        cookies=cookies,
-    )
-    data = _handle_response(response)
-    user = None
-    if data.get("user"):
-        u = data["user"]
-        try:
-            user = User(
-                user_id=u["user_id"],
-                user_email=u["user_email"],
-                user_first_name=u["user_first_name"],
-                user_last_name=u["user_last_name"],
-                user_roles=u.get("user_roles", []),
-            )
-        except KeyError as exc:
-            raise StackureError("network", "Unexpected user payload format") from exc
-    return {
-        "authenticated": data.get("authenticated", False),
-        "user": user,
-        "sign_in_url": data.get("sign_in_url"),
-    }
+def validate_session(app_id: str, request: Request) -> Session:
+    """Validate ``request``'s session against Stackure.
 
-
-async def logout(cookies: dict | None = None) -> None:
-    """Revoke the session represented by ``cookies``.
-
-    Args:
-        cookies: Cookies from the incoming HTTP request.
+    Most callers want :func:`~stackure.verify` or :func:`~stackure.auth`.
 
     Raises:
-        StackureError: With ``code`` in ``{"network", "timeout"}``.
+        StackureError: On invalid input, or any transport or API failure.
     """
-    response = await _request("POST", "/api/public/auth/sign-out", cookies=cookies)
-    _handle_response(response)
+    validate_uuid(app_id, "App ID")
+
+    data = _request(
+        "GET",
+        "/api/public/auth/session/validate",
+        query={"app_id": app_id},
+        token=session_token(request),
+        ua=request.headers.get("user-agent", ""),
+        ip=client_ip(request),
+    )
+    return Session(
+        authenticated=bool(data.get("authenticated")),
+        user=_user(data.get("user")),
+        sign_in_url=data.get("sign_in_url") or "",
+    )
