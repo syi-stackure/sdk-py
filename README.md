@@ -27,10 +27,10 @@ import stackure
 app_id = "7f3c1a2e-9b4d-4e6f-8a1b-2c3d4e5f6071"  # your app's UUID in Stackure
 
 # ASGI — FastAPI, Starlette, Quart
-app = stackure.auth(app_id, "view_any_app")(app)
+app = stackure.auth(app_id, "can_approve_invoice")(app)
 
 # WSGI — Flask, Django
-flask_app.wsgi_app = stackure.auth(app_id, "view_any_app")(flask_app.wsgi_app)
+flask_app.wsgi_app = stackure.auth(app_id, "can_approve_invoice")(flask_app.wsgi_app)
 ```
 
 The same wrapper handles both; it detects the protocol it was called under.
