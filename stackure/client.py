@@ -27,6 +27,13 @@ def base_url() -> str:
     return env.rstrip("/") if env else _DEFAULT_BASE_URL
 
 
+def _read(resp: Any, status: int) -> bytes:
+    try:
+        return resp.read()
+    except Exception as exc:
+        raise StackureError("network", "failed to read response body", status) from exc
+
+
 def _handle_response(status: int, raw: bytes) -> Any:
     text = raw.decode("utf-8", "replace")
     if not 200 <= status < 300:
@@ -74,9 +81,10 @@ def _request(
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
-                return _handle_response(resp.status, resp.read())
+                status, payload = resp.status, _read(resp, resp.status)
+            return _handle_response(status, payload)
         except urllib.error.HTTPError as exc:
-            payload = exc.read()
+            payload = _read(exc, exc.code)
             if exc.code >= 500 and attempt < _MAX_RETRIES:
                 last = StackureError("network", f"server error ({exc.code})", exc.code)
                 continue
