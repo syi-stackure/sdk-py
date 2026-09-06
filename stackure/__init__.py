@@ -8,11 +8,11 @@ Quickstart
 
 Protect an ASGI app::
 
-    app = stackure.auth(app_id, "view_any_app")(app)
+    app = stackure.auth(app_id, "can_approve_invoice")(app)
 
 Or a WSGI one::
 
-    flask_app.wsgi_app = stackure.auth(app_id, "view_any_app")(flask_app.wsgi_app)
+    flask_app.wsgi_app = stackure.auth(app_id, "can_approve_invoice")(flask_app.wsgi_app)
 
 ``app_id`` is the app's UUID as registered in Stackure.
 

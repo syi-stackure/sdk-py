@@ -101,7 +101,7 @@ def verify(app_id: str, request: Any, *permissions: str) -> VerifyResult:
         *permissions: Optional required permissions; the user must hold one.
 
     Example:
-        >>> result = verify(app_id, request, "view_any_app")
+        >>> result = verify(app_id, request, "can_approve_invoice")
         >>> if not result.authenticated:
         ...     return result.error.message, result.error.code
     """
@@ -278,7 +278,7 @@ def auth(app_id: str, *permissions: str) -> Callable[[Any], Any]:
     middleware, anything else yields WSGI middleware.
 
     Example:
-        >>> app = auth(app_id, "view_any_app")(app)          # ASGI
+        >>> app = auth(app_id, "can_approve_invoice")(app)          # ASGI
         >>> flask_app.wsgi_app = auth(app_id)(flask_app.wsgi_app)
     """
 
