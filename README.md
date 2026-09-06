@@ -7,7 +7,9 @@
 [![Trusted publisher](https://img.shields.io/badge/pypi-trusted--publisher-blue)](https://docs.pypi.org/trusted-publishers/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-Authentication for your app. One decorator.
+Passwordless magic-link authentication SDK for Python — drop-in ASGI and WSGI middleware, zero dependencies.
+
+Protect an app with one line, or verify sessions and send magic links directly against the [Stackure](https://stackure.com) auth API.
 
 ## Install
 
@@ -15,48 +17,82 @@ Authentication for your app. One decorator.
 pip install stackure
 ```
 
-Requires Python 3.10+.
+Requires Python 3.14+.
 
-## Protect a route
+## Protect an app
 
 ```python
-from stackure import auth
+import stackure
 
-@app.get("/admin")
-@auth(app_id="my-app-id", roles=["admin"])
-async def admin(request):
-    return {"user": request.user}
+app_id = "7f3c1a2e-9b4d-4e6f-8a1b-2c3d4e5f6071"  # your app's UUID in Stackure
+
+# ASGI — FastAPI, Starlette, Quart
+app = stackure.auth(app_id, "view_any_app")(app)
+
+# WSGI — Flask, Django
+flask_app.wsgi_app = stackure.auth(app_id, "view_any_app")(flask_app.wsgi_app)
 ```
 
-Works with FastAPI, Starlette, Django, Flask, aiohttp — cookies extracted automatically from the request object.
+The same wrapper handles both; it detects the protocol it was called under.
+
+Access the authenticated user in your view:
+
+```python
+user = stackure.user_from_request(request)
+print(user.user_email, user.user_permissions)
+```
+
+- API requests get JSON errors
+- Browser requests get redirected to sign-in
+- The sign-in handoff is automatic: Stackure hands the browser back with a `session_token`, the middleware stores it as a cookie on your domain and strips it from the URL
+
+## Requirements
+
+Stackure binds sessions to the browser's user agent and IP. The SDK validates
+from your server, so it forwards the original `User-Agent` and
+`X-Forwarded-For`. Your app must see the real client IP — if it runs behind a
+proxy or CDN, make sure that layer sets `X-Forwarded-For`.
+
+Every request is validated against Stackure, so revocation is immediate.
 
 ## Verify manually
 
 ```python
-from stackure import verify
-
-result = await verify(app_id="my-app-id", cookies=dict(request.cookies))
+result = stackure.verify(app_id, request)
 
 if not result.authenticated:
-    return {"error": result.error["message"]}, result.error["code"]
+    # result.error.code, result.error.message, result.error.sign_in_url
+    ...
 
-return {"user": result.user}
+# result.user
 ```
+
+`verify` never raises — transport and API failures come back as a 500 result.
+It accepts a WSGI `environ`, an ASGI `scope`, or a framework request object
+(Starlette, FastAPI, Flask, Django).
 
 ## Send a magic link
 
 ```python
-from stackure import send_magic_link
-
-await send_magic_link(email="user@example.com", app_id="my-app-id")
+resp = stackure.send_magic_link("user@example.com", app_id)
+# resp.message
 ```
 
 ## Log out
 
 ```python
-from stackure import logout
+r = stackure.logout(request)
+```
 
-await logout(dict(request.cookies))
+Returns the status and headers that clear the app's cookie and redirect to
+Stackure's sign-out. Your framework builds the response:
+
+```python
+# Flask
+return "", r.status, r.headers
+
+# Starlette / FastAPI
+return Response(status_code=r.status, headers=dict(r.headers))
 ```
 
 ## Configuration
@@ -67,18 +103,25 @@ Set `STACKURE_BASE_URL` to point at a non-production environment:
 STACKURE_BASE_URL=https://stage.stackure.com python app.py
 ```
 
+Retry-on-5xx (one retry after 500ms) and the 2-second request timeout are
+hard-coded. Timeouts are never retried.
+
 ## Errors
 
-All errors are `StackureError`. Switch on `.code`:
+Everything except `verify` raises `StackureError`. Switch on `.code`:
 
 ```python
 from stackure import StackureError
 
 try:
-    await send_magic_link(email=email)
+    stackure.send_magic_link(email)
 except StackureError as err:
-    # err.code is one of: "validation" | "auth" | "forbidden" | "timeout" | "network"
-    ...
+    match err.code:
+        case "validation": ...  # bad input
+        case "auth": ...        # 401 from the API
+        case "forbidden": ...   # 403 from the API
+        case "timeout": ...     # request exceeded the 2s timeout
+        case "network": ...     # everything else
 ```
 
 ## Contributing
