@@ -10,7 +10,7 @@ from typing import Any
 
 from .errors import StackureError
 from .types import MagicLinkResponse, Request, Session, User
-from .validation import validate_email, validate_uuid
+from .validation import is_uuid, validate_email, validate_uuid
 
 _DEFAULT_BASE_URL = "https://stackure.com"
 _REQUEST_TIMEOUT_S = 2.0
@@ -180,6 +180,9 @@ def send_magic_link(email: str, app_id: str | None = None) -> MagicLinkResponse:
 def validate_session(app_id: str, request: Request) -> Session:
     """Validate ``request``'s session against Stackure.
 
+    A request without a well-formed session token gets the sign-in URL
+    without a Stackure call.
+
     Most callers want :func:`~stackure.verify` or :func:`~stackure.auth`.
 
     Raises:
@@ -187,11 +190,18 @@ def validate_session(app_id: str, request: Request) -> Session:
     """
     validate_uuid(app_id, "App ID")
 
+    token = session_token(request)
+    if not is_uuid(token):
+        return Session(
+            authenticated=False,
+            sign_in_url=f"{base_url()}/sign-in/magic-link?app_id={app_id}",
+        )
+
     data = _request(
         "GET",
         "/api/public/auth/session/validate",
         query={"app_id": app_id},
-        token=session_token(request),
+        token=token,
         ua=request.headers.get("user-agent", ""),
         ip=client_ip(request),
     )

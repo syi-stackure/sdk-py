@@ -19,11 +19,16 @@ def validate_email(email: str) -> None:
         raise StackureError("validation", "invalid email format")
 
 
+def is_uuid(value: str) -> bool:
+    """Whether ``value`` is a UUID v4."""
+    return bool(_UUID_RE.fullmatch(value))
+
+
 def validate_uuid(value: str, field_name: str = "UUID") -> None:
     """Raise a ``"validation"``-coded :class:`StackureError` if ``value`` isn't a UUID v4."""
     if not value or not isinstance(value, str):
         raise StackureError("validation", f"{field_name} is required")
-    if not _UUID_RE.match(value):
+    if not is_uuid(value):
         raise StackureError(
             "validation",
             f"invalid {field_name} format (must be a valid UUID)",

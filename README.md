@@ -53,7 +53,9 @@ from your server, so it forwards the original `User-Agent` and
 `X-Forwarded-For`. Your app must see the real client IP — if it runs behind a
 proxy or CDN, make sure that layer sets `X-Forwarded-For`.
 
-Every request is validated against Stackure, so revocation is immediate.
+Every request with a session token is validated against Stackure, so revocation
+is immediate. Requests without a well-formed token get the sign-in URL without a
+Stackure call.
 
 ## Verify manually
 
