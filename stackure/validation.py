@@ -15,7 +15,7 @@ def validate_email(email: str) -> None:
     """Raise a ``"validation"``-coded :class:`StackureError` if ``email`` is malformed."""
     if not email or not isinstance(email, str):
         raise StackureError("validation", "email is required")
-    if not _EMAIL_RE.match(email):
+    if not _EMAIL_RE.fullmatch(email):
         raise StackureError("validation", "invalid email format")
 
 

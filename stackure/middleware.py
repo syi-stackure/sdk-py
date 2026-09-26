@@ -12,17 +12,20 @@ from inspect import iscoroutinefunction
 from typing import Any
 
 from .client import (
-    SESSION_COOKIE,
+    APP_COOKIE,
     TOKEN_PARAM,
     base_url,
     cookie,
-    query_param,
     validate_session,
+    validate_token,
+    origin,
 )
 from .types import Redirect, Request, User, VerifyError, VerifyResult
 
 _logger = logging.getLogger(__name__)
 _USER_KEY = "stackure.user"
+_MAX_HANDOFF_BODY = 4096
+_SESSION_MAX_AGE = 604800
 
 
 def _from_wsgi(environ: dict[str, Any]) -> Request:
@@ -36,7 +39,9 @@ def _from_wsgi(environ: dict[str, Any]) -> Request:
             headers[name] = environ[key]
     return Request(
         method=(environ.get("REQUEST_METHOD") or "GET").upper(),
-        path=(environ.get("SCRIPT_NAME", "") + environ.get("PATH_INFO", "")) or "/",
+        path=((environ.get("SCRIPT_NAME", "") + environ.get("PATH_INFO", "")) or "/")
+        .encode("latin-1", "replace")
+        .decode("utf-8", "replace"),
         query=environ.get("QUERY_STRING", ""),
         headers=headers,
         remote_addr=environ.get("REMOTE_ADDR", ""),
@@ -138,7 +143,7 @@ def user_from_request(source: Any) -> User | None:
 
 
 def _cookie_header(value: str, secure: bool, max_age: int | None = None) -> tuple[str, str]:
-    parts = [f"{SESSION_COOKIE}={value}", "Path=/", "HttpOnly", "SameSite=Lax"]
+    parts = [f"{APP_COOKIE}={value}", "Path=/", "HttpOnly", "SameSite=Lax"]
     if secure:
         parts.append("Secure")
     if max_age is not None:
@@ -146,20 +151,18 @@ def _cookie_header(value: str, secure: bool, max_age: int | None = None) -> tupl
     return ("Set-Cookie", "; ".join(parts))
 
 
-def _clean_url(request: Request) -> str:
-    pairs = [
-        (key, value)
-        for key, value in urllib.parse.parse_qsl(request.query, keep_blank_values=True)
-        if key != TOKEN_PARAM
-    ]
-    query = urllib.parse.urlencode(pairs)
-    return request.path + (f"?{query}" if query else "")
+def _self_url(request: Request) -> str:
+    path = request.path
+    if not path.startswith("/") or path.startswith(("//", "/\\")):
+        return "/"
+    path = urllib.parse.quote(path, safe="/:@!$&'()*+,;=")
+    return path + (f"?{request.query}" if request.query else "")
 
 
 def _wants_form_token(request: Request) -> bool:
     return (
         request.method == "POST"
-        and not cookie(request, SESSION_COOKIE)
+        and request.headers.get("origin", "") == origin()
         and request.headers.get("content-type", "").startswith(
             "application/x-www-form-urlencoded"
         )
@@ -169,6 +172,13 @@ def _wants_form_token(request: Request) -> bool:
 def _form_token(raw: bytes) -> str:
     parsed = urllib.parse.parse_qs(raw.decode("utf-8", "replace"))
     return parsed.get(TOKEN_PARAM, [""])[0]
+
+
+def _adoptable(app_id: str, token: str, request: Request) -> bool:
+    try:
+        return validate_token(app_id, token, request).authenticated
+    except Exception:
+        return False
 
 
 def _error_body(error: VerifyError) -> bytes:
@@ -183,15 +193,40 @@ def _accepts_html(request: Request) -> bool:
     return "text/html" in accept and "application/json" not in accept
 
 
+class _Chain(io.RawIOBase):
+    def __init__(self, head: bytes, tail: Any) -> None:
+        self.head, self.tail = io.BytesIO(head), tail
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: Any) -> int:
+        n = self.head.readinto(b)
+        if n:
+            return n
+        d = self.tail.read(len(b))
+        b[: len(d)] = d
+        return len(d)
+
+
 def _handoff_wsgi(environ: dict[str, Any], request: Request) -> str:
-    token = query_param(request, TOKEN_PARAM)
-    if token or not _wants_form_token(request):
-        return token
+    if not _wants_form_token(request):
+        return ""
+    stream = environ["wsgi.input"]
+    if environ.get("CONTENT_LENGTH") is None:
+        raw = stream.read(_MAX_HANDOFF_BODY + 1)
+        if len(raw) > _MAX_HANDOFF_BODY:
+            environ["wsgi.input"] = io.BufferedReader(_Chain(raw, stream))
+            return ""
+        environ["wsgi.input"] = io.BytesIO(raw)
+        return _form_token(raw)
     try:
-        length = int(environ.get("CONTENT_LENGTH") or 0)
+        length = int(environ["CONTENT_LENGTH"] or 0)
     except ValueError:
         return ""
-    raw = environ["wsgi.input"].read(length) if length > 0 else b""
+    if length > _MAX_HANDOFF_BODY:
+        return ""
+    raw = stream.read(length) if length > 0 else b""
     environ["wsgi.input"] = io.BytesIO(raw)
     return _form_token(raw)
 
@@ -199,30 +234,27 @@ def _handoff_wsgi(environ: dict[str, Any], request: Request) -> str:
 async def _handoff_asgi(
     receive: Callable[[], Any], request: Request
 ) -> tuple[str, Callable[[], Any]]:
-    token = query_param(request, TOKEN_PARAM)
-    if token or not _wants_form_token(request):
-        return token, receive
+    if not _wants_form_token(request):
+        return "", receive
 
-    chunks: list[bytes] = []
+    seen: list[dict[str, Any]] = []
+    size = 0
+    over = False
     while True:
         message = await receive()
+        seen.append(message)
         if message["type"] != "http.request":
             break
-        chunks.append(message.get("body", b""))
-        if not message.get("more_body"):
+        size += len(message.get("body", b""))
+        over = size > _MAX_HANDOFF_BODY
+        if over or not message.get("more_body"):
             break
-    raw = b"".join(chunks)
-
-    replayed = False
+    raw = b"".join(m.get("body", b"") for m in seen if m["type"] == "http.request")
 
     async def replay() -> dict[str, Any]:
-        nonlocal replayed
-        if replayed:
-            return {"type": "http.disconnect"}
-        replayed = True
-        return {"type": "http.request", "body": raw, "more_body": False}
+        return seen.pop(0) if seen else await receive()
 
-    return _form_token(raw), replay
+    return "" if over else _form_token(raw), replay
 
 
 def _send_wsgi(
@@ -268,9 +300,8 @@ def _is_asgi(app: Any) -> bool:
 def auth(app_id: str, *permissions: str) -> Callable[[Any], Any]:
     """Middleware that enforces authentication, for ASGI or WSGI apps.
 
-    Completes Stackure's sign-in handoff by storing the returned
-    ``session_token`` as a cookie on your domain, then stripping it from the
-    URL. On success the user is attached to the request (read it back with
+    Completes Stackure's sign-in handoff by validating the POSTed
+    ``session_token`` and storing it as a cookie on your domain. On success the user is attached to the request (read it back with
     :func:`user_from_request`). Browser requests get redirected to sign-in on
     401; API requests get JSON.
 
@@ -291,13 +322,13 @@ def auth(app_id: str, *permissions: str) -> Callable[[Any], Any]:
 
                 request = _from_asgi(scope)
                 token, receive = await _handoff_asgi(receive, request)
-                if token:
+                if token and await asyncio.to_thread(_adoptable, app_id, token, request):
                     return await _send_asgi(
                         send,
                         303,
                         [
-                            ("location", _clean_url(request)),
-                            _cookie_header(token, _is_https(request)),
+                            ("location", _self_url(request)),
+                            _cookie_header(token, _is_https(request), _SESSION_MAX_AGE),
                         ],
                     )
 
@@ -321,13 +352,13 @@ def auth(app_id: str, *permissions: str) -> Callable[[Any], Any]:
         def wsgi(environ: dict[str, Any], start_response: Any) -> Any:
             request = _from_wsgi(environ)
             token = _handoff_wsgi(environ, request)
-            if token:
+            if token and _adoptable(app_id, token, request):
                 return _send_wsgi(
                     start_response,
                     303,
                     [
-                        ("Location", _clean_url(request)),
-                        _cookie_header(token, _is_https(request)),
+                        ("Location", _self_url(request)),
+                        _cookie_header(token, _is_https(request), _SESSION_MAX_AGE),
                     ],
                 )
 

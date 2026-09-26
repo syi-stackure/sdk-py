@@ -19,6 +19,16 @@ pip install stackure
 
 Requires Python 3.14+.
 
+## Configure
+
+```bash
+export STACKURE_APP_SECRET=...   # from the app page in Stackure, shown once
+```
+
+Sent as `X-App-Secret` on every call. The first call that actually reaches Stackure raises `StackureError("validation")` if it is missing. `STACKURE_BASE_URL` optionally overrides the API host.
+
+A newly registered app is not usable by anyone, even its creator, until it is shared with the organization or assigned to a team in Stackure. Do that before testing sign-in.
+
 ## Protect an app
 
 ```python
@@ -44,18 +54,22 @@ print(user.user_email, user.user_permissions)
 
 - API requests get JSON errors
 - Browser requests get redirected to sign-in
-- The sign-in handoff is automatic: Stackure hands the browser back with a `session_token`, the middleware stores it as a cookie on your domain and strips it from the URL
+- The sign-in handoff is automatic: Stackure POSTs a `session_token` (an app-scoped session token valid only for this app) back to your app, the middleware validates it and stores it as a `stackure_session` cookie on your domain (not `session`, which Flask uses for its own session). Handoff bodies over 4 KB are ignored.
 
 ## Requirements
 
-Stackure binds sessions to the browser's user agent and IP. The SDK validates
-from your server, so it forwards the original `User-Agent` and
-`X-Forwarded-For`. Your app must see the real client IP — if it runs behind a
-proxy or CDN, make sure that layer sets `X-Forwarded-For`.
+Sessions are not bound to the browser's user agent or IP. The SDK still
+forwards the original `User-Agent` and `X-Forwarded-For` when validating from
+your server, but they are informational only.
 
 Every request with a session token is validated against Stackure, so revocation
 is immediate. Requests without a well-formed token get the sign-in URL without a
 Stackure call.
+
+Every call has one 2-second deadline covering connect, headers, body and the
+single retry. Calls retry once after 500 ms on a 5xx or a connection failure,
+never on a timeout. A timeout anywhere, including while reading the body,
+raises `StackureError("timeout")`.
 
 ## Verify manually
 
@@ -97,17 +111,6 @@ return "", r.status, r.headers
 return Response(status_code=r.status, headers=dict(r.headers))
 ```
 
-## Configuration
-
-Set `STACKURE_BASE_URL` to point at a non-production environment:
-
-```bash
-STACKURE_BASE_URL=https://stage.stackure.com python app.py
-```
-
-Retry-on-5xx (one retry after 500ms) and the 2-second request timeout are
-hard-coded. Timeouts are never retried.
-
 ## Errors
 
 Everything except `verify` raises `StackureError`. Switch on `.code`:
@@ -122,13 +125,13 @@ except StackureError as err:
         case "validation": ...  # bad input
         case "auth": ...        # 401 from the API
         case "forbidden": ...   # 403 from the API
-        case "timeout": ...     # request exceeded the 2s timeout
+        case "timeout": ...     # request exceeded the 2s deadline
         case "network": ...     # everything else
 ```
 
 ## Contributing
 
-Open a PR. Tag a release when ready: `git tag vX.Y.Z && git push --tags` — the release workflow builds, signs, and publishes.
+Open a PR.
 
 ## Security
 

@@ -12,7 +12,8 @@ class StackureError(Exception):
 
     Attributes:
         code: One of ``"validation"``, ``"auth"``, ``"forbidden"``,
-            ``"timeout"``, ``"network"``.
+            ``"timeout"``, ``"network"``. ``"validation"`` also covers a
+            missing ``STACKURE_APP_SECRET``.
         message: Human-readable description.
         status_code: HTTP status returned by the API, or ``None`` if the error
             happened before a response was received.
