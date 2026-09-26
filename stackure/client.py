@@ -189,6 +189,7 @@ def _user(data: Any) -> User | None:
     try:
         return User(
             user_id=data["user_id"],
+            account_id=data["account_id"],
             user_email=data["user_email"],
             user_first_name=data["user_first_name"],
             user_last_name=data["user_last_name"],
