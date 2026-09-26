@@ -1,11 +1,12 @@
 """HTTP layer for the Stackure SDK. Standard library only."""
 
+import http.client
+import io
 import json
 import os
+import socket
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from typing import Any
 
 from .errors import StackureError
@@ -18,7 +19,13 @@ _MAX_RETRIES = 1
 _RETRY_DELAY_S = 0.5
 
 SESSION_COOKIE = "session"
+APP_COOKIE = "stackure_session"
 TOKEN_PARAM = "session_token"
+
+
+def origin() -> str:
+    u = urllib.parse.urlsplit(base_url())
+    return f"{u.scheme}://{u.netloc}"
 
 
 def base_url() -> str:
@@ -27,11 +34,59 @@ def base_url() -> str:
     return env.rstrip("/") if env else _DEFAULT_BASE_URL
 
 
-def _read(resp: Any, status: int) -> bytes:
+def app_secret() -> str:
+    """Resolve ``STACKURE_APP_SECRET`` from the environment. Required."""
+    v = os.environ.get("STACKURE_APP_SECRET")
+    if not v:
+        raise StackureError("validation", "STACKURE_APP_SECRET is not set")
+    return v
+
+
+def _timeout() -> StackureError:
+    return StackureError("timeout", f"request timed out after {_REQUEST_TIMEOUT_S}s")
+
+
+def _left(deadline: float) -> float:
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError
+    return left
+
+
+class _Raw(socket.SocketIO):
+    def __init__(self, sock: Any, deadline: float) -> None:
+        super().__init__(sock, "rb")
+        sock._io_refs += 1
+        self.deadline = deadline
+
+    def readinto(self, b: Any) -> int | None:
+        self._sock.settimeout(_left(self.deadline))
+        return super().readinto(b)
+
+
+def _response(deadline: float) -> type[http.client.HTTPResponse]:
+    class R(http.client.HTTPResponse):
+        def __init__(self, sock: Any, *a: Any, **kw: Any) -> None:
+            super().__init__(sock, *a, **kw)
+            self.fp.close()
+            self.fp = io.BufferedReader(_Raw(sock, deadline))
+
+    return R
+
+
+def _can_retry(attempt: int, deadline: float) -> bool:
+    return attempt < _MAX_RETRIES and deadline - time.monotonic() > _RETRY_DELAY_S
+
+
+def _read(resp: Any) -> bytes:
     try:
         return resp.read()
+    except TimeoutError as exc:
+        raise _timeout() from exc
+    except (OSError, http.client.HTTPException):
+        raise
     except Exception as exc:
-        raise StackureError("network", "failed to read response body", status) from exc
+        raise StackureError("network", "failed to read response body", resp.status) from exc
 
 
 def _handle_response(status: int, raw: bytes) -> Any:
@@ -59,12 +114,13 @@ def _request(
     ua: str = "",
     ip: str = "",
 ) -> Any:
-    url = base_url() + path
+    base = urllib.parse.urlsplit(base_url())
+    target = base.path + path
     if query:
-        url += "?" + urllib.parse.urlencode(query)
+        target += "?" + urllib.parse.urlencode(query)
 
     data = json.dumps(body).encode() if body is not None else None
-    headers = {}
+    headers = {"X-App-Secret": app_secret()}
     if data is not None:
         headers["Content-Type"] = "application/json"
     if ua:
@@ -74,33 +130,32 @@ def _request(
     if token:
         headers["Cookie"] = f"{SESSION_COOKIE}={token}"
 
-    last: StackureError | None = None
+    cls = http.client.HTTPSConnection if base.scheme == "https" else http.client.HTTPConnection
+    deadline = time.monotonic() + _REQUEST_TIMEOUT_S
     for attempt in range(_MAX_RETRIES + 1):
         if attempt:
             time.sleep(_RETRY_DELAY_S)
-        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        conn = None
         try:
-            with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
-                status, payload = resp.status, _read(resp, resp.status)
-            return _handle_response(status, payload)
-        except urllib.error.HTTPError as exc:
-            payload = _read(exc, exc.code)
-            if exc.code >= 500 and attempt < _MAX_RETRIES:
-                last = StackureError("network", f"server error ({exc.code})", exc.code)
-                continue
-            return _handle_response(exc.code, payload)
+            conn = cls(base.netloc, timeout=_left(deadline))
+            conn.response_class = _response(deadline)
+            conn.connect()
+            conn.sock.settimeout(_left(deadline))
+            conn.request(method, target, body=data, headers=headers)
+            resp = conn.getresponse()
+            status, payload = resp.status, _read(resp)
         except TimeoutError as exc:
-            raise StackureError(
-                "timeout", f"request timed out after {_REQUEST_TIMEOUT_S}s"
-            ) from exc
-        except urllib.error.URLError as exc:
-            if isinstance(exc.reason, TimeoutError):
-                raise StackureError(
-                    "timeout", f"request timed out after {_REQUEST_TIMEOUT_S}s"
-                ) from exc
-            last = StackureError("network", f"network request failed: {exc.reason}")
-
-    raise last or StackureError("network", "request failed after retries")
+            raise _timeout() from exc
+        except (OSError, http.client.HTTPException) as exc:
+            if not _can_retry(attempt, deadline):
+                raise StackureError("network", f"network request failed: {exc}") from exc
+            continue
+        finally:
+            if conn:
+                conn.close()
+        if status >= 500 and _can_retry(attempt, deadline):
+            continue
+        return _handle_response(status, payload)
 
 
 def client_ip(request: Request) -> str:
@@ -116,18 +171,16 @@ def cookie(request: Request, name: str) -> str:
     for part in request.headers.get("cookie", "").split(";"):
         key, sep, value = part.partition("=")
         if sep and key.strip() == name:
-            return value.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] == '"':
+                value = value[1:-1]
+            return value
     return ""
 
 
-def query_param(request: Request, name: str) -> str:
-    """Read a single query-string parameter, or ``""`` if absent."""
-    return urllib.parse.parse_qs(request.query).get(name, [""])[0]
-
-
 def session_token(request: Request) -> str:
-    """The session token: handoff query parameter first, then the cookie."""
-    return query_param(request, TOKEN_PARAM) or cookie(request, SESSION_COOKIE)
+    """The session token from the app's session cookie."""
+    return cookie(request, APP_COOKIE)
 
 
 def _user(data: Any) -> User | None:
@@ -188,9 +241,13 @@ def validate_session(app_id: str, request: Request) -> Session:
     Raises:
         StackureError: On invalid input, or any transport or API failure.
     """
+    return validate_token(app_id, session_token(request), request)
+
+
+def validate_token(app_id: str, token: str, request: Request) -> Session:
+    """Validate an explicit session ``token`` for ``request``'s browser."""
     validate_uuid(app_id, "App ID")
 
-    token = session_token(request)
     if not is_uuid(token):
         return Session(
             authenticated=False,
