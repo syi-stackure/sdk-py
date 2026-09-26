@@ -49,7 +49,7 @@ Access the authenticated user in your view:
 
 ```python
 user = stackure.user_from_request(request)
-print(user.user_email, user.user_permissions)
+print(user.user_email, user.account_id, user.user_permissions)
 ```
 
 - API requests get JSON errors
