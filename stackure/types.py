@@ -10,6 +10,7 @@ class User:
 
     Attributes:
         user_id: Unique identifier for the user.
+        account_id: Identifier of the organization the user belongs to.
         user_email: User's email address.
         user_first_name: User's first name.
         user_last_name: User's last name.
@@ -17,6 +18,7 @@ class User:
     """
 
     user_id: str
+    account_id: str
     user_email: str
     user_first_name: str
     user_last_name: str
