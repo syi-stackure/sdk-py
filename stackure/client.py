@@ -42,6 +42,15 @@ def app_secret() -> str:
     return v
 
 
+def app_id() -> str:
+    """Resolve ``STACKURE_APP_ID`` from the environment. Required."""
+    v = os.environ.get("STACKURE_APP_ID")
+    if not v:
+        raise StackureError("validation", "STACKURE_APP_ID is not set")
+    validate_uuid(v, "STACKURE_APP_ID")
+    return v
+
+
 def _timeout() -> StackureError:
     return StackureError("timeout", f"request timed out after {_REQUEST_TIMEOUT_S}s")
 
@@ -206,12 +215,11 @@ def _user(data: Any) -> User | None:
         raise StackureError("network", "unexpected user payload format") from exc
 
 
-def send_magic_link(email: str, app_id: str | None = None) -> MagicLinkResponse:
+def send_magic_link(email: str) -> MagicLinkResponse:
     """Send a passwordless sign-in email.
 
     Args:
         email: Recipient's email address.
-        app_id: Your Stackure application UUID. Optional.
 
     Returns:
         The API's confirmation message.
@@ -221,16 +229,11 @@ def send_magic_link(email: str, app_id: str | None = None) -> MagicLinkResponse:
             ``"forbidden"``, ``"timeout"``, ``"network"``.
 
     Example:
-        >>> send_magic_link("user@example.com", app_id).message
+        >>> send_magic_link("user@example.com").message
         'Magic link sent'
     """
     validate_email(email)
-
-    body: dict[str, str] = {"user_email": email}
-    if app_id:
-        validate_uuid(app_id, "App ID")
-        body["app_id"] = app_id
-
+    body = {"user_email": email, "app_id": app_id()}
     data = _request("POST", "/api/public/auth/magic-link/send", body=body)
     try:
         return MagicLinkResponse(message=data["message"])
@@ -238,7 +241,7 @@ def send_magic_link(email: str, app_id: str | None = None) -> MagicLinkResponse:
         raise StackureError("network", "unexpected API response format") from exc
 
 
-def validate_session(app_id: str, request: Request) -> Session:
+def validate_session(request: Request) -> Session:
     """Validate ``request``'s session against Stackure.
 
     A request without a well-formed session token gets the sign-in URL
@@ -249,23 +252,23 @@ def validate_session(app_id: str, request: Request) -> Session:
     Raises:
         StackureError: On invalid input, or any transport or API failure.
     """
-    return validate_token(app_id, session_token(request), request)
+    return validate_token(session_token(request), request)
 
 
-def validate_token(app_id: str, token: str, request: Request) -> Session:
+def validate_token(token: str, request: Request) -> Session:
     """Validate an explicit session ``token`` for ``request``'s browser."""
-    validate_uuid(app_id, "App ID")
+    app = app_id()
 
     if not is_uuid(token):
         return Session(
             authenticated=False,
-            sign_in_url=f"{base_url()}/sign-in/magic-link?app_id={app_id}",
+            sign_in_url=f"{base_url()}/sign-in/magic-link?app_id={app}",
         )
 
     data = _request(
         "GET",
         "/api/public/auth/session/validate",
-        query={"app_id": app_id},
+        query={"app_id": app},
         token=token,
         ua=request.headers.get("user-agent", ""),
         ip=client_ip(request),
@@ -277,7 +280,7 @@ def validate_token(app_id: str, token: str, request: Request) -> Session:
     )
 
 
-def validate_mcp(app_id: str, url: str, token: str, request: Request) -> tuple[User | None, str]:
+def validate_mcp(url: str, token: str, request: Request) -> tuple[User | None, str]:
     """Validate an MCP bearer ``token`` for the MCP endpoint at ``url``.
 
     Returns the user when authenticated, else ``None``, with the
@@ -287,12 +290,10 @@ def validate_mcp(app_id: str, url: str, token: str, request: Request) -> tuple[U
     Raises:
         StackureError: On invalid input, or any transport or API failure.
     """
-    validate_uuid(app_id, "App ID")
-
     data = _request(
         "GET",
         "/api/public/auth/session/validate",
-        query={"app_id": app_id, "mcp": url},
+        query={"app_id": app_id(), "mcp": url},
         credential=token if is_uuid(token) else "",
         ua=request.headers.get("user-agent", ""),
         ip=client_ip(request),

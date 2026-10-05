@@ -116,26 +116,31 @@ class McpTest(unittest.TestCase):
         self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_port}"
         env = mock.patch.dict(
-            os.environ, {"STACKURE_BASE_URL": self.base, "STACKURE_APP_SECRET": SECRET}
+            os.environ,
+            {
+                "STACKURE_BASE_URL": self.base,
+                "STACKURE_APP_SECRET": SECRET,
+                "STACKURE_APP_ID": APP_ID,
+            },
         )
         env.start()
         self.addCleanup(env.stop)
         self.users: list[stackure.User | None] = []
 
-    def wsgi(self, environ: dict[str, Any], *permissions: str, app_id: str = APP_ID) -> Response:
+    def wsgi(self, environ: dict[str, Any], *permissions: str) -> Response:
         def app(environ: dict[str, Any], start_response: Any) -> list[bytes]:
             self.users.append(stackure.user_from_request(environ))
             start_response("200 OK", [("Content-Length", "2")])
             return [b"ok"]
 
         sent: list[tuple[str, list[tuple[str, str]]]] = []
-        chunks = stackure.mcp(app_id, *permissions)(app)(
+        chunks = stackure.mcp(*permissions)(app)(
             environ, lambda status, headers: sent.append((status, headers))
         )
         [(status, headers)] = sent
         return int(status.split()[0]), {k.lower(): v for k, v in headers}, b"".join(chunks)
 
-    def asgi(self, scope: dict[str, Any], *permissions: str, app_id: str = APP_ID) -> Response:
+    def asgi(self, scope: dict[str, Any], *permissions: str) -> Response:
         async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
             self.users.append(stackure.user_from_request(scope))
             await send(
@@ -155,7 +160,7 @@ class McpTest(unittest.TestCase):
         async def send(message: dict[str, Any]) -> None:
             sent.append(message)
 
-        asyncio.run(stackure.mcp(app_id, *permissions)(app)(scope, receive, send))
+        asyncio.run(stackure.mcp(*permissions)(app)(scope, receive, send))
         start, *rest = sent
         return (
             start["status"],
@@ -173,7 +178,6 @@ class McpTest(unittest.TestCase):
         query: str = "",
         scheme: str = "http",
         proto: str | None = None,
-        app_id: str = APP_ID,
         asgi: bool = False,
     ) -> Response:
         lines = [
@@ -200,7 +204,6 @@ class McpTest(unittest.TestCase):
                     "headers": [(name.encode(), value.encode()) for name, value in lines],
                 },
                 *permissions,
-                app_id=app_id,
             )
         environ = {
             "REQUEST_METHOD": "POST",
@@ -211,7 +214,7 @@ class McpTest(unittest.TestCase):
         }
         for name, value in lines:
             environ["HTTP_" + name.upper().replace("-", "_")] = value
-        return self.wsgi(environ, *permissions, app_id=app_id)
+        return self.wsgi(environ, *permissions)
 
     def mcp_url(self) -> str:
         [(_, path, _)] = self.server.seen
@@ -389,17 +392,38 @@ class McpTest(unittest.TestCase):
     def test_missing_app_secret_or_bad_app_id_is_503_without_a_call(self) -> None:
         for asgi in (False, True):
             with self.subTest(asgi=asgi):
-                with self.assertLogs("stackure", level="DEBUG") as logs:
-                    result = self.call(app_id="not-a-uuid", asgi=asgi)
-                self.assertEqual(result, UNAVAILABLE)
-                self.assertEqual(logs.output, [FAILED + "validation"])
-                with mock.patch.dict(os.environ):
-                    del os.environ["STACKURE_APP_SECRET"]
+                with mock.patch.dict(os.environ, {"STACKURE_APP_ID": "not-a-uuid"}):
                     with self.assertLogs("stackure", level="DEBUG") as logs:
                         result = self.call(asgi=asgi)
                 self.assertEqual(result, UNAVAILABLE)
                 self.assertEqual(logs.output, [FAILED + "validation"])
+                for name in ("STACKURE_APP_ID", "STACKURE_APP_SECRET"):
+                    with mock.patch.dict(os.environ):
+                        del os.environ[name]
+                        with self.assertLogs("stackure", level="DEBUG") as logs:
+                            result = self.call(asgi=asgi)
+                    self.assertEqual(result, UNAVAILABLE)
+                    self.assertEqual(logs.output, [FAILED + "validation"])
                 self.assertEqual(self.users, [])
+        self.assertEqual(self.server.seen, [])
+
+    def test_verify_reads_the_app_id_on_every_call(self) -> None:
+        with mock.patch.dict(os.environ):
+            del os.environ["STACKURE_APP_ID"]
+            with self.assertLogs("stackure", level="DEBUG") as logs:
+                result = stackure.verify(stackure.Request())
+        self.assertEqual(
+            result.error, stackure.VerifyError(500, "Authentication verification failed")
+        )
+        self.assertEqual(
+            logs.output,
+            ["ERROR:stackure.middleware:stackure: verification error: STACKURE_APP_ID is not set"],
+        )
+        sign_in = f"{self.base}/sign-in/magic-link?app_id={APP_ID}"
+        result = stackure.verify(stackure.Request())
+        self.assertEqual(
+            result.error, stackure.VerifyError(401, "Valid authentication required", sign_in)
+        )
         self.assertEqual(self.server.seen, [])
 
     def test_https_is_reflected_in_the_mcp_url(self) -> None:
@@ -459,7 +483,7 @@ class McpTest(unittest.TestCase):
             seen.append(scope["type"])
 
         with self.assertNoLogs("stackure", level="DEBUG"):
-            asyncio.run(stackure.mcp(APP_ID)(app)({"type": "lifespan"}, None, None))
+            asyncio.run(stackure.mcp()(app)({"type": "lifespan"}, None, None))
         self.assertEqual(seen, ["lifespan"])
         self.assertEqual(self.server.seen, [])
 
@@ -471,7 +495,7 @@ class McpTest(unittest.TestCase):
             return [body]
 
         front = wsgiref.simple_server.make_server(
-            "127.0.0.1", 0, stackure.mcp(APP_ID)(app), handler_class=_Quiet
+            "127.0.0.1", 0, stackure.mcp()(app), handler_class=_Quiet
         )
         threading.Thread(target=front.serve_forever, args=(0.01,), daemon=True).start()
         self.addCleanup(front.server_close)
