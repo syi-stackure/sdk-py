@@ -71,6 +71,7 @@ class LogoutTest(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("STACKURE_APP_SECRET", None)
+        os.environ.pop("STACKURE_APP_ID", None)
 
     def logout(
         self,
@@ -127,7 +128,9 @@ class LogoutTest(unittest.TestCase):
         return [(method, path) for method, path, _ in self.server.seen]
 
     def test_same_origin_post_signs_out_with_bearer_and_no_app_secret(self) -> None:
-        with mock.patch.dict(os.environ, {"STACKURE_APP_SECRET": SECRET}):
+        with mock.patch.dict(
+            os.environ, {"STACKURE_APP_SECRET": SECRET, "STACKURE_APP_ID": APP_ID}
+        ):
             for asgi in (False, True):
                 with self.subTest(asgi=asgi), self.assertNoLogs(level="DEBUG"):
                     self.server.seen = []
@@ -141,7 +144,7 @@ class LogoutTest(unittest.TestCase):
                     self.assertIsNone(headers["Cookie"])
                     self.assertIsNone(headers["X-App-Secret"])
                     self.assertNotIn(SECRET, str(headers))
-            client.validate_token(APP_ID, TOKEN, stackure.Request())
+            client.validate_token(TOKEN, stackure.Request())
         self.assertEqual(self.server.seen[-1][2]["X-App-Secret"], SECRET)
 
     def test_asgi_cookie_split_over_header_lines_is_read(self) -> None:

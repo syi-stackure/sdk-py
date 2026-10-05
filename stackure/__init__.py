@@ -8,13 +8,11 @@ Quickstart
 
 Protect an ASGI app::
 
-    app = stackure.auth(app_id, "can_approve_invoice")(app)
+    app = stackure.auth("can_approve_invoice")(app)
 
 Or a WSGI one::
 
-    flask_app.wsgi_app = stackure.auth(app_id, "can_approve_invoice")(flask_app.wsgi_app)
-
-``app_id`` is the app's UUID as registered in Stackure.
+    flask_app.wsgi_app = stackure.auth("can_approve_invoice")(flask_app.wsgi_app)
 
 Access the authenticated user inside a view::
 
@@ -22,13 +20,13 @@ Access the authenticated user inside a view::
 
 Manual verification without middleware::
 
-    result = stackure.verify(app_id, request)
+    result = stackure.verify(request)
     if result.authenticated:
         ...  # use result.user
 
 Send a magic-link email::
 
-    stackure.send_magic_link("user@example.com", app_id)
+    stackure.send_magic_link("user@example.com")
 
 Sign the user out of Stackure everywhere and clear the app's cookie, from a
 route that takes every method on the logout path::
@@ -78,7 +76,7 @@ MCP
 AI clients (Claude, Claude Code, VS Code, Cursor) sign users in through
 Stackure and reach the app through its MCP endpoint. Protect that route with::
 
-    app.mount("/mcp", stackure.mcp(app_id, "can_approve_invoice")(mcp_app))
+    app.mount("/mcp", stackure.mcp("can_approve_invoice")(mcp_app))
 
 This one line checks every MCP request in real time with the same app secret;
 there is no extra setup. It reads ``Authorization: Bearer`` and ignores
@@ -92,10 +90,12 @@ unless an MCP URL is set for the app in Stackure.
 Configuration
 -------------
 
-``STACKURE_APP_SECRET`` must be set to the app secret shown when the app was
-registered (or last rotated) in Stackure. It is sent as the ``X-App-Secret``
-header on every call except sign-out; the first call that needs it raises a
-``"validation"`` :class:`StackureError` when it is missing.
+``STACKURE_APP_ID`` must be set to the app's UUID, shown on the app page in
+Stackure, and ``STACKURE_APP_SECRET`` to the app secret shown when the app was
+registered (or last rotated). The secret is sent as the ``X-App-Secret`` header
+on every call except sign-out; the first call that needs either raises a
+``"validation"`` :class:`StackureError` when it is missing or, for the app ID,
+not a UUID.
 ``STACKURE_BASE_URL`` overrides the API host (default
 ``https://stackure.com``).
 

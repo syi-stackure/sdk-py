@@ -99,24 +99,23 @@ def _is_https(request: Request) -> bool:
     )
 
 
-def verify(app_id: str, request: Any, *permissions: str) -> VerifyResult:
+def verify(request: Any, *permissions: str) -> VerifyResult:
     """Verify a request without raising.
 
     Callers inspect ``authenticated`` and decide how to respond. Transport and
     API failures come back as a 500 result.
 
     Args:
-        app_id: Your Stackure application UUID.
         request: A WSGI ``environ``, ASGI ``scope``, or framework request.
         *permissions: Optional required permissions; the user must hold one.
 
     Example:
-        >>> result = verify(app_id, request, "can_approve_invoice")
+        >>> result = verify(request, "can_approve_invoice")
         >>> if not result.authenticated:
         ...     return result.error.message, result.error.code
     """
     try:
-        session = validate_session(app_id, to_request(request))
+        session = validate_session(to_request(request))
     except Exception as exc:
         _logger.error("stackure: verification error: %s", exc)
         return VerifyResult(error=VerifyError(500, "Authentication verification failed"))
@@ -193,9 +192,9 @@ def _form_token(raw: bytes) -> str:
     return parsed.get(TOKEN_PARAM, [""])[0]
 
 
-def _adoptable(app_id: str, token: str, request: Request) -> bool:
+def _adoptable(token: str, request: Request) -> bool:
     try:
-        return validate_token(app_id, token, request).authenticated
+        return validate_token(token, request).authenticated
     except Exception:
         return False
 
@@ -316,7 +315,7 @@ def _is_asgi(app: Any) -> bool:
     )
 
 
-def auth(app_id: str, *permissions: str) -> Callable[[Any], Any]:
+def auth(*permissions: str) -> Callable[[Any], Any]:
     """Middleware that enforces authentication, for ASGI or WSGI apps.
 
     Completes Stackure's sign-in handoff by validating the POSTed
@@ -328,8 +327,8 @@ def auth(app_id: str, *permissions: str) -> Callable[[Any], Any]:
     middleware, anything else yields WSGI middleware.
 
     Example:
-        >>> app = auth(app_id, "can_approve_invoice")(app)          # ASGI
-        >>> flask_app.wsgi_app = auth(app_id)(flask_app.wsgi_app)
+        >>> app = auth("can_approve_invoice")(app)  # ASGI
+        >>> flask_app.wsgi_app = auth()(flask_app.wsgi_app)
     """
 
     def factory(app: Any) -> Any:
@@ -341,7 +340,7 @@ def auth(app_id: str, *permissions: str) -> Callable[[Any], Any]:
 
                 request = _from_asgi(scope)
                 token, receive = await _handoff_asgi(receive, request)
-                if token and await asyncio.to_thread(_adoptable, app_id, token, request):
+                if token and await asyncio.to_thread(_adoptable, token, request):
                     return await _send_asgi(
                         send,
                         303,
@@ -351,7 +350,7 @@ def auth(app_id: str, *permissions: str) -> Callable[[Any], Any]:
                         ],
                     )
 
-                result = await asyncio.to_thread(verify, app_id, request, *permissions)
+                result = await asyncio.to_thread(verify, request, *permissions)
                 error = result.error
                 if not result.authenticated and error:
                     if error.code == 401 and _accepts_html(request) and error.sign_in_url:
@@ -371,7 +370,7 @@ def auth(app_id: str, *permissions: str) -> Callable[[Any], Any]:
         def wsgi(environ: dict[str, Any], start_response: Any) -> Any:
             request = _from_wsgi(environ)
             token = _handoff_wsgi(environ, request)
-            if token and _adoptable(app_id, token, request):
+            if token and _adoptable(token, request):
                 return _send_wsgi(
                     start_response,
                     303,
@@ -381,7 +380,7 @@ def auth(app_id: str, *permissions: str) -> Callable[[Any], Any]:
                     ],
                 )
 
-            result = verify(app_id, request, *permissions)
+            result = verify(request, *permissions)
             error = result.error
             if not result.authenticated and error:
                 if error.code == 401 and _accepts_html(request) and error.sign_in_url:
@@ -413,11 +412,11 @@ def _bearer(request: Request) -> str:
 
 
 def _mcp_verify(
-    app_id: str, request: Request, permissions: tuple[str, ...]
+    request: Request, permissions: tuple[str, ...]
 ) -> User | tuple[int, list[tuple[str, str]], bytes]:
     json_type = ("Content-Type", "application/json")
     try:
-        user, challenge = validate_mcp(app_id, _mcp_url(request), _bearer(request), request)
+        user, challenge = validate_mcp(_mcp_url(request), _bearer(request), request)
     except Exception as exc:
         _logger.error(
             "stackure: mcp verification failed: %s", getattr(exc, "code", type(exc).__name__)
@@ -433,7 +432,7 @@ def _mcp_verify(
     return user
 
 
-def mcp(app_id: str, *permissions: str) -> Callable[[Any], Any]:
+def mcp(*permissions: str) -> Callable[[Any], Any]:
     """Middleware that enforces authentication on an MCP endpoint, for ASGI or WSGI apps.
 
     AI clients sign users in through Stackure and send the credential it
@@ -450,8 +449,8 @@ def mcp(app_id: str, *permissions: str) -> Callable[[Any], Any]:
     URL unless an MCP URL is set for the app in Stackure.
 
     Example:
-        >>> app.mount("/mcp", mcp(app_id, "can_approve_invoice")(mcp_app))  # ASGI
-        >>> mcp_wsgi_app = mcp(app_id)(mcp_wsgi_app)
+        >>> app.mount("/mcp", mcp("can_approve_invoice")(mcp_app))  # ASGI
+        >>> mcp_wsgi_app = mcp()(mcp_wsgi_app)
     """
 
     def factory(app: Any) -> Any:
@@ -461,9 +460,7 @@ def mcp(app_id: str, *permissions: str) -> Callable[[Any], Any]:
                 if scope.get("type") != "http":
                     return await app(scope, receive, send)
 
-                result = await asyncio.to_thread(
-                    _mcp_verify, app_id, _from_asgi(scope), permissions
-                )
+                result = await asyncio.to_thread(_mcp_verify, _from_asgi(scope), permissions)
                 if not isinstance(result, User):
                     return await _send_asgi(send, *result)
 
@@ -473,7 +470,7 @@ def mcp(app_id: str, *permissions: str) -> Callable[[Any], Any]:
             return asgi
 
         def wsgi(environ: dict[str, Any], start_response: Any) -> Any:
-            result = _mcp_verify(app_id, _from_wsgi(environ), permissions)
+            result = _mcp_verify(_from_wsgi(environ), permissions)
             if not isinstance(result, User):
                 return _send_wsgi(start_response, *result)
 
