@@ -16,6 +16,8 @@ from .client import (
     TOKEN_PARAM,
     base_url,
     cookie,
+    session_token,
+    sign_out,
     validate_session,
     validate_token,
     origin,
@@ -50,10 +52,12 @@ def _from_wsgi(environ: dict[str, Any]) -> Request:
 
 
 def _from_asgi(scope: dict[str, Any]) -> Request:
-    headers = {
-        key.decode("latin-1").lower(): value.decode("latin-1")
-        for key, value in scope.get("headers") or []
-    }
+    headers: dict[str, str] = {}
+    for key, value in scope.get("headers") or []:
+        name, text = key.decode("latin-1").lower(), value.decode("latin-1")
+        if name in headers:
+            text = headers[name] + ("; " if name == "cookie" else ",") + text
+        headers[name] = text
     client = scope.get("client") or ("", 0)
     return Request(
         method=(scope.get("method") or "GET").upper(),
@@ -167,6 +171,20 @@ def _wants_form_token(request: Request) -> bool:
             "application/x-www-form-urlencoded"
         )
     )
+
+
+def _same_origin_post(request: Request) -> bool:
+    if request.method != "POST":
+        return False
+    site, sent, host = (request.headers.get(k) for k in ("sec-fetch-site", "origin", "host"))
+    if any(v and "," in v for v in (site, sent, host)):
+        return False
+    if site is not None:
+        return site == "same-origin"
+    if not sent or not host:
+        return False
+    scheme, _, authority = sent.lower().partition("://")
+    return authority == host.lower() and (scheme == "https" or not _is_https(request))
 
 
 def _form_token(raw: bytes) -> str:
@@ -383,20 +401,35 @@ def auth(app_id: str, *permissions: str) -> Callable[[Any], Any]:
 
 
 def logout(request: Any) -> Redirect:
-    """Clear the app's session cookie and redirect to Stackure's sign-out.
+    """Sign the user out of Stackure everywhere and clear the app's session cookie.
 
-    Returns the status and headers to send; your framework builds the
-    response.
+    Mount it for every method on the logout path. Trigger it with a form or
+    button that POSTs from the app's own page; a link or any other request is
+    sent to Stackure's sign-out page, where the user confirms.
+
+    A same-origin POST makes one server-side call to Stackure with the app
+    session token, clears the cookie and redirects to Stackure. If that call
+    fails, the redirect goes to Stackure's sign-out page instead, where the
+    user can finish signing out.
+
+    Synchronous and never raises. Returns a :class:`Redirect`, the status and
+    headers to send; your framework builds the response.
 
     Example:
-        >>> r = logout(flask.request.environ)
-        >>> return "", r.status, r.headers
+        >>> methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+        >>> @flask_app.route("/logout", methods=methods)
+        ... def sign_out():
+        ...     r = logout(flask.request.environ)
+        ...     return "", r.status, r.headers
     """
-    normalised = to_request(request)
-    return Redirect(
-        303,
-        [
-            ("Location", base_url() + "/signout"),
-            _cookie_header("", _is_https(normalised), 0),
-        ],
-    )
+    path = "/signout"
+    clear: list[tuple[str, str]] = []
+    try:
+        normalised = to_request(request)
+        if _same_origin_post(normalised):
+            clear = [_cookie_header("", _is_https(normalised), 0)]
+            sign_out(session_token(normalised), normalised)
+            path = "/"
+    except Exception as exc:
+        _logger.error("stackure: sign-out failed: %s", getattr(exc, "code", type(exc).__name__))
+    return Redirect(303, [("Location", base_url() + path), *clear])

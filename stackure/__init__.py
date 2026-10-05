@@ -30,9 +30,14 @@ Send a magic-link email::
 
     stackure.send_magic_link("user@example.com", app_id)
 
-Log the user out::
+Sign the user out of Stackure everywhere and clear the app's cookie, from a
+route that takes every method on the logout path::
 
     r = stackure.logout(request)
+
+Trigger it with a form or button that POSTs from the app's own page; a link or
+any other request is sent to Stackure's sign-out page, where the user
+confirms. ``logout`` is synchronous and returns a :class:`Redirect`.
 
 Sign-in handoff
 ---------------
@@ -72,7 +77,7 @@ Configuration
 
 ``STACKURE_APP_SECRET`` must be set to the app secret shown when the app was
 registered (or last rotated) in Stackure. It is sent as the ``X-App-Secret``
-header on every call; the first call that actually reaches Stackure raises a
+header on every call except sign-out; the first call that needs it raises a
 ``"validation"`` :class:`StackureError` when it is missing.
 ``STACKURE_BASE_URL`` overrides the API host (default
 ``https://stackure.com``).
@@ -89,9 +94,10 @@ surfaces as ``"timeout"``.
 Errors
 ------
 
-Every function except :func:`verify` raises :class:`StackureError`. Inspect
-``code`` to branch on category: ``"validation"``, ``"auth"``, ``"forbidden"``,
-``"timeout"``, ``"network"``.
+Every function except :func:`verify` and :func:`logout` raises
+:class:`StackureError`; those two never raise. Inspect ``code`` to branch on
+category: ``"validation"``, ``"auth"``, ``"forbidden"``, ``"timeout"``,
+``"network"``.
 
 Releases
 --------

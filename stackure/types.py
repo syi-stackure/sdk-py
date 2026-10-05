@@ -92,7 +92,8 @@ class Request:
         method: Uppercase HTTP method.
         path: Full request path, including any mount prefix.
         query: Raw query string, without the leading ``?``.
-        headers: Request headers, keyed by lowercase name.
+        headers: Request headers, keyed by lowercase name. A header sent more
+            than once is one comma-joined value (``Cookie`` joins with ``; ``).
         remote_addr: Peer address, before ``X-Forwarded-For`` is considered.
         scheme: ``"http"`` or ``"https"``.
     """

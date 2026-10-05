@@ -89,7 +89,7 @@ def _read(resp: Any) -> bytes:
         raise StackureError("network", "failed to read response body", resp.status) from exc
 
 
-def _handle_response(status: int, raw: bytes) -> Any:
+def _handle_response(status: int, raw: bytes, parse: bool) -> Any:
     text = raw.decode("utf-8", "replace")
     if not 200 <= status < 300:
         body = text or "unknown error"
@@ -98,6 +98,8 @@ def _handle_response(status: int, raw: bytes) -> Any:
         if status == 403:
             raise StackureError("forbidden", body, 403)
         raise StackureError("network", f"api error ({status}): {body}", status)
+    if not parse:
+        return None
     try:
         return json.loads(text)
     except ValueError as exc:
@@ -111,8 +113,10 @@ def _request(
     body: Any = None,
     query: dict[str, str] | None = None,
     token: str = "",
+    bearer: str = "",
     ua: str = "",
     ip: str = "",
+    parse: bool = True,
 ) -> Any:
     base = urllib.parse.urlsplit(base_url())
     target = base.path + path
@@ -120,7 +124,7 @@ def _request(
         target += "?" + urllib.parse.urlencode(query)
 
     data = json.dumps(body).encode() if body is not None else None
-    headers = {"X-App-Secret": app_secret()}
+    headers = {"Authorization": f"Bearer {bearer}"} if bearer else {"X-App-Secret": app_secret()}
     if data is not None:
         headers["Content-Type"] = "application/json"
     if ua:
@@ -143,7 +147,7 @@ def _request(
             conn.sock.settimeout(_left(deadline))
             conn.request(method, target, body=data, headers=headers)
             resp = conn.getresponse()
-            status, payload = resp.status, _read(resp)
+            status, payload = resp.status, _read(resp) if parse else b""
         except TimeoutError as exc:
             raise _timeout() from exc
         except (OSError, http.client.HTTPException) as exc:
@@ -155,7 +159,7 @@ def _request(
                 conn.close()
         if status >= 500 and _can_retry(attempt, deadline):
             continue
-        return _handle_response(status, payload)
+        return _handle_response(status, payload, parse)
 
 
 def client_ip(request: Request) -> str:
@@ -267,4 +271,25 @@ def validate_token(app_id: str, token: str, request: Request) -> Session:
         authenticated=bool(data.get("authenticated")),
         user=_user(data.get("user")),
         sign_in_url=data.get("sign_in_url") or "",
+    )
+
+
+def sign_out(token: str, request: Request) -> None:
+    """End the user's access everywhere, authorised by the app session ``token``.
+
+    A token that is not well formed is never sent. Any 2xx status is success;
+    the response body is neither read nor parsed.
+
+    Raises:
+        StackureError: On any transport failure or non-2xx status.
+    """
+    if not is_uuid(token):
+        return
+    _request(
+        "POST",
+        "/api/public/auth/sign-out",
+        bearer=token,
+        ua=request.headers.get("user-agent", ""),
+        ip=client_ip(request),
+        parse=False,
     )
