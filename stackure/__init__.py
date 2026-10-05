@@ -1,7 +1,7 @@
 """Stackure is the Python SDK for the Stackure authentication API.
 
 Stackure provides passwordless B2B authentication. This SDK wraps the public
-API behind six free functions and a middleware.
+API behind six free functions and two middlewares.
 
 Quickstart
 ----------
@@ -72,6 +72,23 @@ The middleware inspects the ``Accept`` header. Browser requests (``Accept:
 text/html``) redirect to the sign-in URL on 401. API requests (``Accept:
 application/json``) receive a JSON error body.
 
+MCP
+---
+
+AI clients (Claude, Claude Code, VS Code, Cursor) sign users in through
+Stackure and reach the app through its MCP endpoint. Protect that route with::
+
+    app.mount("/mcp", stackure.mcp(app_id, "can_approve_invoice")(mcp_app))
+
+This one line checks every MCP request in real time with the same app secret;
+there is no extra setup. It reads ``Authorization: Bearer`` and ignores
+cookies, so keep the MCP route outside :func:`auth`. A request that is not
+signed in gets a 401 with a ``WWW-Authenticate`` header, a missing permission
+a 403, and a failed check a 503; it never redirects.
+
+The MCP endpoint must be served from the same site as the app's registered URL
+unless an MCP URL is set for the app in Stackure.
+
 Configuration
 -------------
 
@@ -109,7 +126,7 @@ OIDC trusted publishing.
 
 from .client import send_magic_link, validate_session
 from .errors import StackureError, StackureErrorCode
-from .middleware import auth, logout, to_request, user_from_request, verify
+from .middleware import auth, logout, mcp, to_request, user_from_request, verify
 from .types import (
     MagicLinkResponse,
     Redirect,
@@ -122,6 +139,7 @@ from .types import (
 
 __all__ = [
     "auth",
+    "mcp",
     "verify",
     "logout",
     "user_from_request",

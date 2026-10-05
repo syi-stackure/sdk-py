@@ -114,6 +114,7 @@ def _request(
     query: dict[str, str] | None = None,
     token: str = "",
     bearer: str = "",
+    credential: str = "",
     ua: str = "",
     ip: str = "",
     parse: bool = True,
@@ -125,6 +126,8 @@ def _request(
 
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Authorization": f"Bearer {bearer}"} if bearer else {"X-App-Secret": app_secret()}
+    if credential:
+        headers["Authorization"] = f"Bearer {credential}"
     if data is not None:
         headers["Content-Type"] = "application/json"
     if ua:
@@ -272,6 +275,30 @@ def validate_token(app_id: str, token: str, request: Request) -> Session:
         user=_user(data.get("user")),
         sign_in_url=data.get("sign_in_url") or "",
     )
+
+
+def validate_mcp(app_id: str, url: str, token: str, request: Request) -> tuple[User | None, str]:
+    """Validate an MCP bearer ``token`` for the MCP endpoint at ``url``.
+
+    Returns the user when authenticated, else ``None``, with the
+    ``WWW-Authenticate`` value to answer with. A token that is not well formed
+    is never sent; the call is still made, without it.
+
+    Raises:
+        StackureError: On invalid input, or any transport or API failure.
+    """
+    validate_uuid(app_id, "App ID")
+
+    data = _request(
+        "GET",
+        "/api/public/auth/session/validate",
+        query={"app_id": app_id, "mcp": url},
+        credential=token if is_uuid(token) else "",
+        ua=request.headers.get("user-agent", ""),
+        ip=client_ip(request),
+    )
+    user = _user(data.get("user")) if data.get("authenticated") else None
+    return user, data.get("www_authenticate") or "Bearer"
 
 
 def sign_out(token: str, request: Request) -> None:
