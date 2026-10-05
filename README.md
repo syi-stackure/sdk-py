@@ -56,6 +56,27 @@ print(user.user_email, user.account_id, user.user_permissions)
 - Browser requests get redirected to sign-in
 - The sign-in handoff is automatic: Stackure POSTs a `session_token` (an app-scoped session token valid only for this app) back to your app, the middleware validates it and stores it as a `stackure_session` cookie on your domain (not `session`, which Flask uses for its own session). Handoff bodies over 4 KB are ignored.
 
+## MCP
+
+```python
+# Wrap the MCP app itself, then route to it beside the rest of your app
+mcp = stackure.mcp(app_id, "can_approve_invoice")(mcp_app)
+
+# Starlette / FastAPI
+routes = [Mount("/mcp", mcp)]
+```
+
+AI clients (Claude, Claude Code, VS Code, Cursor) sign users in through
+Stackure. This one line checks every MCP request in real time with the same app
+secret; there is no extra setup. The MCP endpoint must be served from the same
+site as the app's registered URL unless an MCP URL is set for the app in
+Stackure.
+
+- Wraps ASGI and WSGI apps like `auth`, with the same optional permissions and `user_from_request`
+- Reads `Authorization: Bearer` and ignores cookies, so keep the MCP route outside `stackure.auth`
+- With Starlette or FastAPI `Mount`, the address AI clients use ends in a slash: `/mcp/`
+- Not signed in gets a 401 with `WWW-Authenticate`, a missing permission a 403, a failed check a 503; never a redirect
+
 ## Requirements
 
 Sessions are not bound to the browser's user agent or IP. The SDK still

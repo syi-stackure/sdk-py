@@ -18,6 +18,7 @@ from .client import (
     cookie,
     session_token,
     sign_out,
+    validate_mcp,
     validate_session,
     validate_token,
     origin,
@@ -393,6 +394,90 @@ def auth(app_id: str, *permissions: str) -> Callable[[Any], Any]:
                 )
 
             environ[_USER_KEY] = result.user
+            return app(environ, start_response)
+
+        return wsgi
+
+    return factory
+
+
+def _mcp_url(request: Request) -> str:
+    scheme = "https" if _is_https(request) else "http"
+    path = urllib.parse.quote(request.path, safe="/:@!$&'()*+,;=")
+    return f"{scheme}://{request.headers.get('host', '')}{path}"
+
+
+def _bearer(request: Request) -> str:
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    return token.strip() if scheme.lower() == "bearer" else ""
+
+
+def _mcp_verify(
+    app_id: str, request: Request, permissions: tuple[str, ...]
+) -> User | tuple[int, list[tuple[str, str]], bytes]:
+    json_type = ("Content-Type", "application/json")
+    try:
+        user, challenge = validate_mcp(app_id, _mcp_url(request), _bearer(request), request)
+    except Exception as exc:
+        _logger.error(
+            "stackure: mcp verification failed: %s", getattr(exc, "code", type(exc).__name__)
+        )
+        return 503, [json_type], b'{"error":"unavailable"}'
+
+    if user is None:
+        return 401, [("WWW-Authenticate", challenge), json_type], b'{"error":"unauthorized"}'
+
+    if permissions and not any(p in user.user_permissions for p in permissions):
+        return 403, [json_type], b'{"error":"forbidden"}'
+
+    return user
+
+
+def mcp(app_id: str, *permissions: str) -> Callable[[Any], Any]:
+    """Middleware that enforces authentication on an MCP endpoint, for ASGI or WSGI apps.
+
+    AI clients sign users in through Stackure and send the credential it
+    issues as ``Authorization: Bearer``. Every MCP request is checked against
+    Stackure in real time with the same app secret as :func:`auth`; cookies
+    are ignored. On success the user is attached to the request (read it back
+    with :func:`user_from_request`).
+
+    Never redirects and never touches cookies. A request that is not signed in
+    gets a 401 with the ``WWW-Authenticate`` header AI clients follow to sign
+    in, a missing permission a 403, and a failed check a 503, each as JSON.
+
+    The MCP endpoint must be served from the same site as the app's registered
+    URL unless an MCP URL is set for the app in Stackure.
+
+    Example:
+        >>> app.mount("/mcp", mcp(app_id, "can_approve_invoice")(mcp_app))  # ASGI
+        >>> mcp_wsgi_app = mcp(app_id)(mcp_wsgi_app)
+    """
+
+    def factory(app: Any) -> Any:
+        if _is_asgi(app):
+
+            async def asgi(scope: dict[str, Any], receive: Any, send: Any) -> Any:
+                if scope.get("type") != "http":
+                    return await app(scope, receive, send)
+
+                result = await asyncio.to_thread(
+                    _mcp_verify, app_id, _from_asgi(scope), permissions
+                )
+                if not isinstance(result, User):
+                    return await _send_asgi(send, *result)
+
+                scope[_USER_KEY] = result
+                return await app(scope, receive, send)
+
+            return asgi
+
+        def wsgi(environ: dict[str, Any], start_response: Any) -> Any:
+            result = _mcp_verify(app_id, _from_wsgi(environ), permissions)
+            if not isinstance(result, User):
+                return _send_wsgi(start_response, *result)
+
+            environ[_USER_KEY] = result
             return app(environ, start_response)
 
         return wsgi
