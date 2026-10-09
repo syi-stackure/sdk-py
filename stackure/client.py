@@ -209,7 +209,6 @@ def _user(data: Any) -> User | None:
             user_email=data["user_email"],
             user_first_name=data["user_first_name"],
             user_last_name=data["user_last_name"],
-            user_permissions=data.get("user_permissions") or [],
         )
     except (KeyError, TypeError) as exc:
         raise StackureError("network", "unexpected user payload format") from exc

@@ -36,10 +36,10 @@ A newly registered app is not usable by anyone, even its creator, until it is sh
 import stackure
 
 # ASGI — FastAPI, Starlette, Quart
-app = stackure.auth("can_approve_invoice")(app)
+app = stackure.auth()(app)
 
 # WSGI — Flask, Django
-flask_app.wsgi_app = stackure.auth("can_approve_invoice")(flask_app.wsgi_app)
+flask_app.wsgi_app = stackure.auth()(flask_app.wsgi_app)
 ```
 
 The same wrapper handles both; it detects the protocol it was called under.
@@ -48,7 +48,7 @@ Access the authenticated user in your view:
 
 ```python
 user = stackure.user_from_request(request)
-print(user.user_email, user.account_id, user.user_permissions)
+print(user.user_email, user.account_id)
 ```
 
 - API requests get JSON errors
@@ -59,7 +59,7 @@ print(user.user_email, user.account_id, user.user_permissions)
 
 ```python
 # Wrap the MCP app itself, then route to it beside the rest of your app
-mcp = stackure.mcp("can_approve_invoice")(mcp_app)
+mcp = stackure.mcp()(mcp_app)
 
 # Starlette / FastAPI
 routes = [Mount("/mcp", mcp)]
@@ -71,10 +71,10 @@ secret; there is no extra setup. The MCP endpoint must be served from the same
 site as the app's registered URL unless an MCP URL is set for the app in
 Stackure.
 
-- Wraps ASGI and WSGI apps like `auth`, with the same optional permissions and `user_from_request`
+- Wraps ASGI and WSGI apps like `auth`, with the same `user_from_request`
 - Reads `Authorization: Bearer` and ignores cookies, so keep the MCP route outside `stackure.auth`
 - With Starlette or FastAPI `Mount`, the address AI clients use ends in a slash: `/mcp/`
-- Not signed in gets a 401 with `WWW-Authenticate`, a missing permission a 403, a failed check a 503; never a redirect
+- Not signed in gets a 401 with `WWW-Authenticate`, a failed check a 503; never a redirect
 
 ## Requirements
 

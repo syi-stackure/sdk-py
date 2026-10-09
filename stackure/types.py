@@ -14,7 +14,6 @@ class User:
         user_email: User's email address.
         user_first_name: User's first name.
         user_last_name: User's last name.
-        user_permissions: Permissions granted to the user for the current app.
     """
 
     user_id: str
@@ -22,7 +21,6 @@ class User:
     user_email: str
     user_first_name: str
     user_last_name: str
-    user_permissions: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -41,7 +39,7 @@ class VerifyError:
     """Why a :func:`verify` call did not authenticate.
 
     Attributes:
-        code: HTTP status code — 401, 403, or 500.
+        code: HTTP status code — 401 or 500.
         message: Human-readable description.
         sign_in_url: Where to send an unauthenticated browser to sign in.
     """
@@ -57,7 +55,7 @@ class VerifyResult:
 
     Attributes:
         authenticated: Whether the request carries a valid session.
-        user: The user, when authenticated (also set on a 403).
+        user: The user, when authenticated.
         error: Populated when ``authenticated`` is ``False``.
     """
 
