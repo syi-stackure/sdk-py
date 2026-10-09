@@ -34,7 +34,6 @@ USER = stackure.User(
     user_email="ada@example.com",
     user_first_name="Ada",
     user_last_name="Lovelace",
-    user_permissions=["can_read_invoice", "can_approve_invoice"],
 )
 JSON = {"Content-Type": "application/json"}
 SIGNED_IN = (
@@ -69,7 +68,6 @@ def _answer(status: int, error: str, **extra: str) -> Response:
 
 PASSED: Response = (200, {"content-length": "2"}, b"ok")
 UNAUTHORIZED = _answer(401, "unauthorized", **{"www-authenticate": CHALLENGE})
-FORBIDDEN = _answer(403, "forbidden")
 UNAVAILABLE = _answer(503, "unavailable")
 
 
@@ -127,20 +125,20 @@ class McpTest(unittest.TestCase):
         self.addCleanup(env.stop)
         self.users: list[stackure.User | None] = []
 
-    def wsgi(self, environ: dict[str, Any], *permissions: str) -> Response:
+    def wsgi(self, environ: dict[str, Any]) -> Response:
         def app(environ: dict[str, Any], start_response: Any) -> list[bytes]:
             self.users.append(stackure.user_from_request(environ))
             start_response("200 OK", [("Content-Length", "2")])
             return [b"ok"]
 
         sent: list[tuple[str, list[tuple[str, str]]]] = []
-        chunks = stackure.mcp(*permissions)(app)(
+        chunks = stackure.mcp()(app)(
             environ, lambda status, headers: sent.append((status, headers))
         )
         [(status, headers)] = sent
         return int(status.split()[0]), {k.lower(): v for k, v in headers}, b"".join(chunks)
 
-    def asgi(self, scope: dict[str, Any], *permissions: str) -> Response:
+    def asgi(self, scope: dict[str, Any]) -> Response:
         async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
             self.users.append(stackure.user_from_request(scope))
             await send(
@@ -160,7 +158,7 @@ class McpTest(unittest.TestCase):
         async def send(message: dict[str, Any]) -> None:
             sent.append(message)
 
-        asyncio.run(stackure.mcp(*permissions)(app)(scope, receive, send))
+        asyncio.run(stackure.mcp()(app)(scope, receive, send))
         start, *rest = sent
         return (
             start["status"],
@@ -170,7 +168,6 @@ class McpTest(unittest.TestCase):
 
     def call(
         self,
-        *permissions: str,
         authorization: str | None = f"Bearer {TOKEN}",
         cookie: str | None = None,
         host: str = HOST,
@@ -202,8 +199,7 @@ class McpTest(unittest.TestCase):
                     "query_string": query.encode(),
                     "client": ("203.0.113.7", 50000),
                     "headers": [(name.encode(), value.encode()) for name, value in lines],
-                },
-                *permissions,
+                }
             )
         environ = {
             "REQUEST_METHOD": "POST",
@@ -214,7 +210,7 @@ class McpTest(unittest.TestCase):
         }
         for name, value in lines:
             environ["HTTP_" + name.upper().replace("-", "_")] = value
-        return self.wsgi(environ, *permissions)
+        return self.wsgi(environ)
 
     def mcp_url(self) -> str:
         [(_, path, _)] = self.server.seen
@@ -322,27 +318,6 @@ class McpTest(unittest.TestCase):
                         result = self.call(asgi=asgi)
                         self.assertEqual(result, bare)
                         self.assertEqual(self.users, [])
-
-    def test_missing_permission_is_403(self) -> None:
-        for asgi in (False, True):
-            with self.subTest(asgi=asgi), self.assertNoLogs("stackure", level="DEBUG"):
-                result = self.call("can_delete_invoice", "can_void_invoice", asgi=asgi)
-                self.assertEqual(result, FORBIDDEN)
-                self.assertEqual(self.users, [])
-                result = self.call("can_delete_invoice", "can_approve_invoice", asgi=asgi)
-                self.assertEqual(result, PASSED)
-                self.assertEqual(self.users, [USER])
-
-    def test_user_without_permissions_is_403_only_when_one_is_required(self) -> None:
-        user = dataclasses.asdict(USER)
-        del user["user_permissions"]
-        self.server.reply = (200, JSON, json.dumps({"authenticated": True, "user": user}).encode())
-        for asgi in (False, True):
-            with self.subTest(asgi=asgi), self.assertNoLogs("stackure", level="DEBUG"):
-                self.assertEqual(self.call("can_approve_invoice", asgi=asgi), FORBIDDEN)
-                self.assertEqual(self.users, [])
-                self.assertEqual(self.call(asgi=asgi), PASSED)
-                self.assertEqual(self.users, [dataclasses.replace(USER, user_permissions=[])])
 
     def test_validate_error_is_503(self) -> None:
         leak = f'{{"error": "{TOKEN} {SECRET}"}}'.encode()

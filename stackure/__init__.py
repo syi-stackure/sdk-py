@@ -8,11 +8,11 @@ Quickstart
 
 Protect an ASGI app::
 
-    app = stackure.auth("can_approve_invoice")(app)
+    app = stackure.auth()(app)
 
 Or a WSGI one::
 
-    flask_app.wsgi_app = stackure.auth("can_approve_invoice")(flask_app.wsgi_app)
+    flask_app.wsgi_app = stackure.auth()(flask_app.wsgi_app)
 
 Access the authenticated user inside a view::
 
@@ -76,13 +76,13 @@ MCP
 AI clients (Claude, Claude Code, VS Code, Cursor) sign users in through
 Stackure and reach the app through its MCP endpoint. Protect that route with::
 
-    app.mount("/mcp", stackure.mcp("can_approve_invoice")(mcp_app))
+    app.mount("/mcp", stackure.mcp()(mcp_app))
 
 This one line checks every MCP request in real time with the same app secret;
 there is no extra setup. It reads ``Authorization: Bearer`` and ignores
 cookies, so keep the MCP route outside :func:`auth`. A request that is not
-signed in gets a 401 with a ``WWW-Authenticate`` header, a missing permission
-a 403, and a failed check a 503; it never redirects.
+signed in gets a 401 with a ``WWW-Authenticate`` header and a failed check a
+503; it never redirects.
 
 The MCP endpoint must be served from the same site as the app's registered URL
 unless an MCP URL is set for the app in Stackure.
