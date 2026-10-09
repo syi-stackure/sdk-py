@@ -16,6 +16,7 @@ from .client import (
     TOKEN_PARAM,
     base_url,
     cookie,
+    fetch_directory,
     session_token,
     sign_out,
     validate_mcp,
@@ -23,7 +24,7 @@ from .client import (
     validate_token,
     origin,
 )
-from .types import Redirect, Request, User, VerifyError, VerifyResult
+from .types import Directory, Redirect, Request, User, VerifyError, VerifyResult
 
 _logger = logging.getLogger(__name__)
 _USER_KEY = "stackure.user"
@@ -126,6 +127,27 @@ def verify(request: Any) -> VerifyResult:
         )
 
     return VerifyResult(authenticated=True, user=user)
+
+
+def directory(request: Any) -> Directory:
+    """List the users and teams in the caller's Stackure organization who can open the app.
+
+    For pickers and sharing. Authenticated by the request's session cookie, so
+    call it from a route behind :func:`auth`; MCP bearer tokens are not
+    accepted. Synchronous, like :func:`verify`.
+
+    Args:
+        request: A WSGI ``environ``, ASGI ``scope``, or framework request.
+
+    Raises:
+        StackureError: ``"auth"`` when there is no valid session, or any
+            other transport or API failure.
+
+    Example:
+        >>> d = directory(request)
+        >>> emails = [u.user_email for u in d.users]
+    """
+    return fetch_directory(to_request(request))
 
 
 def user_from_request(source: Any) -> User | None:
