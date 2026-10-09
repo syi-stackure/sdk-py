@@ -76,6 +76,25 @@ Stackure.
 - With Starlette or FastAPI `Mount`, the address AI clients use ends in a slash: `/mcp/`
 - Not signed in gets a 401 with `WWW-Authenticate`, a failed check a 503; never a redirect
 
+## Identity facts
+
+Every authenticated `User`, from `auth` or `mcp`, also carries:
+
+- `user_is_app_admin`: the user is an app admin or owner in their Stackure org, in charge of its apps
+- `user_teams`: the Stackure teams they belong to (a tuple of `Team(team_id, team_name)`), empty when none
+
+List the users and teams in the caller's org who can open the app, for pickers and sharing:
+
+```python
+d = stackure.directory(request)
+# d.users: DirectoryUser(user_id, user_email, user_first_name, user_last_name)
+# d.teams: Team(team_id, team_name)
+```
+
+`directory` accepts what `verify` accepts and uses the request's session cookie, so call it from a route behind `auth`; MCP bearer tokens are not accepted. No valid session raises `StackureError("auth")`. It is synchronous; in an `async def` view use `await asyncio.to_thread(stackure.directory, request)`.
+
+Stackure defines no in-app permissions. Your app decides what these facts mean.
+
 ## Requirements
 
 Sessions are not bound to the browser's user agent or IP. The SDK still

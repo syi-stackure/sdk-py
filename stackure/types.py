@@ -5,6 +5,19 @@ from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
+class Team:
+    """A Stackure team.
+
+    Attributes:
+        team_id: Unique identifier for the team.
+        team_name: Team name.
+    """
+
+    team_id: str
+    team_name: str
+
+
+@dataclass(frozen=True)
 class User:
     """An authenticated Stackure user.
 
@@ -14,6 +27,10 @@ class User:
         user_email: User's email address.
         user_first_name: User's first name.
         user_last_name: User's last name.
+        user_is_app_admin: Whether the user is an app admin or owner in their
+            Stackure organization, in charge of its apps.
+        user_teams: The Stackure teams the user belongs to in their
+            organization, empty when none.
     """
 
     user_id: str
@@ -21,6 +38,38 @@ class User:
     user_email: str
     user_first_name: str
     user_last_name: str
+    user_is_app_admin: bool = False
+    user_teams: tuple[Team, ...] = ()
+
+
+@dataclass(frozen=True)
+class DirectoryUser:
+    """A user listed by :func:`directory`.
+
+    Attributes:
+        user_id: Unique identifier for the user.
+        user_email: User's email address.
+        user_first_name: User's first name.
+        user_last_name: User's last name.
+    """
+
+    user_id: str
+    user_email: str
+    user_first_name: str
+    user_last_name: str
+
+
+@dataclass(frozen=True)
+class Directory:
+    """:func:`directory` response.
+
+    Attributes:
+        users: Users in the caller's organization who can open the app.
+        teams: Teams in the caller's organization who can open the app.
+    """
+
+    users: tuple[DirectoryUser, ...] = ()
+    teams: tuple[Team, ...] = ()
 
 
 @dataclass(frozen=True)

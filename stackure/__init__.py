@@ -1,7 +1,7 @@
 """Stackure is the Python SDK for the Stackure authentication API.
 
 Stackure provides passwordless B2B authentication. This SDK wraps the public
-API behind six free functions and two middlewares.
+API behind seven free functions and two middlewares.
 
 Quickstart
 ----------
@@ -36,6 +36,10 @@ route that takes every method on the logout path::
 Trigger it with a form or button that POSTs from the app's own page; a link or
 any other request is sent to Stackure's sign-out page, where the user
 confirms. ``logout`` is synchronous and returns a :class:`Redirect`.
+
+List the users and teams in the caller's organization who can open the app::
+
+    d = stackure.directory(request)
 
 Sign-in handoff
 ---------------
@@ -87,6 +91,20 @@ signed in gets a 401 with a ``WWW-Authenticate`` header and a failed check a
 The MCP endpoint must be served from the same site as the app's registered URL
 unless an MCP URL is set for the app in Stackure.
 
+Identity facts
+--------------
+
+Every authenticated :class:`User`, from :func:`auth` or :func:`mcp`, also
+carries ``user_is_app_admin``, true when the user is an app admin or owner in
+their Stackure organization, in charge of its apps, and ``user_teams``, the
+Stackure teams they belong to there (empty when none). Stackure defines no
+in-app permissions; the app decides what these mean.
+
+:func:`directory` returns the users and teams in the caller's organization
+who can open the app, for pickers and sharing. It is authenticated by the
+request's session cookie, so call it from a route behind :func:`auth`; MCP
+bearer tokens are not accepted. No valid session raises ``"auth"``.
+
 Configuration
 -------------
 
@@ -126,12 +144,15 @@ OIDC trusted publishing.
 
 from .client import send_magic_link, validate_session
 from .errors import StackureError, StackureErrorCode
-from .middleware import auth, logout, mcp, to_request, user_from_request, verify
+from .middleware import auth, directory, logout, mcp, to_request, user_from_request, verify
 from .types import (
+    Directory,
+    DirectoryUser,
     MagicLinkResponse,
     Redirect,
     Request,
     Session,
+    Team,
     User,
     VerifyError,
     VerifyResult,
@@ -145,10 +166,14 @@ __all__ = [
     "user_from_request",
     "send_magic_link",
     "validate_session",
+    "directory",
     "to_request",
     "Request",
     "User",
     "Session",
+    "Team",
+    "Directory",
+    "DirectoryUser",
     "VerifyError",
     "VerifyResult",
     "MagicLinkResponse",

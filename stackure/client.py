@@ -10,7 +10,7 @@ import urllib.parse
 from typing import Any
 
 from .errors import StackureError
-from .types import MagicLinkResponse, Request, Session, User
+from .types import Directory, DirectoryUser, MagicLinkResponse, Request, Session, Team, User
 from .validation import is_uuid, validate_email, validate_uuid
 
 _DEFAULT_BASE_URL = "https://stackure.com"
@@ -209,9 +209,15 @@ def _user(data: Any) -> User | None:
             user_email=data["user_email"],
             user_first_name=data["user_first_name"],
             user_last_name=data["user_last_name"],
+            user_is_app_admin=data.get("user_is_app_admin") is True,
+            user_teams=_teams(data.get("user_teams")),
         )
     except (KeyError, TypeError) as exc:
         raise StackureError("network", "unexpected user payload format") from exc
+
+
+def _teams(data: Any) -> tuple[Team, ...]:
+    return tuple(Team(team_id=t["team_id"], team_name=t["team_name"]) for t in data or ())
 
 
 def send_magic_link(email: str) -> MagicLinkResponse:
@@ -264,18 +270,54 @@ def validate_token(token: str, request: Request) -> Session:
             sign_in_url=f"{base_url()}/sign-in/magic-link?app_id={app}",
         )
 
-    data = _request(
-        "GET",
-        "/api/public/auth/session/validate",
-        query={"app_id": app},
-        token=token,
-        ua=request.headers.get("user-agent", ""),
-        ip=client_ip(request),
-    )
+    data = _get_with_session("/api/public/auth/session/validate", app, token, request)
     return Session(
         authenticated=bool(data.get("authenticated")),
         user=_user(data.get("user")),
         sign_in_url=data.get("sign_in_url") or "",
+    )
+
+
+def fetch_directory(request: Request) -> Directory:
+    """List the users and teams in the caller's organization who can open the app.
+
+    A request without a well-formed session token raises ``"auth"`` without a
+    Stackure call.
+
+    Raises:
+        StackureError: On invalid input, or any transport or API failure.
+    """
+    app = app_id()
+    token = session_token(request)
+    if not is_uuid(token):
+        raise StackureError("auth", "invalid session")
+
+    data = _get_with_session("/api/public/directory", app, token, request)
+    try:
+        return Directory(
+            users=tuple(
+                DirectoryUser(
+                    user_id=u["user_id"],
+                    user_email=u["user_email"],
+                    user_first_name=u["user_first_name"],
+                    user_last_name=u["user_last_name"],
+                )
+                for u in data["users"]
+            ),
+            teams=_teams(data["teams"]),
+        )
+    except (KeyError, TypeError) as exc:
+        raise StackureError("network", "unexpected API response format") from exc
+
+
+def _get_with_session(path: str, app: str, token: str, request: Request) -> Any:
+    return _request(
+        "GET",
+        path,
+        query={"app_id": app},
+        token=token,
+        ua=request.headers.get("user-agent", ""),
+        ip=client_ip(request),
     )
 
 
