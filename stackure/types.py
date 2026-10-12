@@ -44,7 +44,7 @@ class User:
 
 @dataclass(frozen=True)
 class DirectoryUser:
-    """A user listed by :func:`directory`.
+    """A user listed by :func:`directory_users`.
 
     Attributes:
         user_id: Unique identifier for the user.
@@ -60,16 +60,18 @@ class DirectoryUser:
 
 
 @dataclass(frozen=True)
-class Directory:
-    """:func:`directory` response.
+class DirectoryPage[T]:
+    """One page from :func:`directory_users` or :func:`directory_teams`, sorted by name.
 
     Attributes:
-        users: Users in the caller's organization who can open the app.
-        teams: Teams in the caller's organization who can open the app.
+        items: The users or teams on this page.
+        next_cursor: Pass as ``cursor`` to get the next page; ``None`` on the last one.
+        total: Total matches, on the first page when there are 10,000 or fewer, else ``None``.
     """
 
-    users: tuple[DirectoryUser, ...] = ()
-    teams: tuple[Team, ...] = ()
+    items: tuple[T, ...] = ()
+    next_cursor: str | None = None
+    total: int | None = None
 
 
 @dataclass(frozen=True)

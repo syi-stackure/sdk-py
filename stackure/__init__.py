@@ -1,7 +1,7 @@
 """Stackure is the Python SDK for the Stackure authentication API.
 
 Stackure provides passwordless B2B authentication. This SDK wraps the public
-API behind 7 free functions and 2 middlewares.
+API behind 8 free functions and 2 middlewares.
 
 Quickstart
 ----------
@@ -37,9 +37,11 @@ Trigger it with a form or button that POSTs from the app's own page; a link or
 any other request is sent to Stackure's sign-out page, where the user
 confirms. ``logout`` is synchronous and returns a :class:`Redirect`.
 
-List the users and teams in the caller's organization who can open the app::
+List the users in the caller's organization who can open the app, and the
+teams that have it, one page at a time::
 
-    d = stackure.directory(request)
+    page = stackure.directory_users(request, query="ada")
+    teams = stackure.directory_teams(request)
 
 Sign-in handoff
 ---------------
@@ -100,10 +102,15 @@ their Stackure organization, in charge of its apps, and ``user_teams``, the
 Stackure teams they belong to there (empty when none). Stackure defines no
 in-app permissions; the app decides what these mean.
 
-:func:`directory` returns the users and teams in the caller's organization
-who can open the app, for pickers and sharing. It is authenticated by the
-request's session cookie, so call it from a route behind :func:`auth`; MCP
-bearer tokens are not accepted. No valid session raises ``"auth"``.
+:func:`directory_users` and :func:`directory_teams` return the users in the
+caller's organization who can open the app and the teams that have it, for
+pickers and sharing. Each call returns a :class:`DirectoryPage`, sorted by
+name: ``query`` searches, ``limit`` sets the page size (100 by default, 200 at
+most) and ``next_cursor``, passed back as ``cursor``, gets the next page.
+``total`` is set on the first page when there are 10,000 matches or fewer.
+Both are authenticated by the request's session cookie, so call them from a
+route behind :func:`auth`; MCP bearer tokens are not accepted. No valid session
+raises ``"auth"``.
 
 Configuration
 -------------
@@ -144,9 +151,18 @@ OIDC trusted publishing.
 
 from .client import send_magic_link, validate_session
 from .errors import StackureError, StackureErrorCode
-from .middleware import auth, directory, logout, mcp, to_request, user_from_request, verify
+from .middleware import (
+    auth,
+    directory_teams,
+    directory_users,
+    logout,
+    mcp,
+    to_request,
+    user_from_request,
+    verify,
+)
 from .types import (
-    Directory,
+    DirectoryPage,
     DirectoryUser,
     MagicLinkResponse,
     Redirect,
@@ -166,13 +182,14 @@ __all__ = [
     "user_from_request",
     "send_magic_link",
     "validate_session",
-    "directory",
+    "directory_users",
+    "directory_teams",
     "to_request",
     "Request",
     "User",
     "Session",
     "Team",
-    "Directory",
+    "DirectoryPage",
     "DirectoryUser",
     "VerifyError",
     "VerifyResult",
