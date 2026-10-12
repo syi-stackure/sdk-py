@@ -16,7 +16,8 @@ from .client import (
     TOKEN_PARAM,
     base_url,
     cookie,
-    fetch_directory,
+    fetch_directory_teams,
+    fetch_directory_users,
     session_token,
     sign_out,
     validate_mcp,
@@ -24,7 +25,16 @@ from .client import (
     validate_token,
     origin,
 )
-from .types import Directory, Redirect, Request, User, VerifyError, VerifyResult
+from .types import (
+    DirectoryPage,
+    DirectoryUser,
+    Redirect,
+    Request,
+    Team,
+    User,
+    VerifyError,
+    VerifyResult,
+)
 
 _logger = logging.getLogger(__name__)
 _USER_KEY = "stackure.user"
@@ -129,25 +139,52 @@ def verify(request: Any) -> VerifyResult:
     return VerifyResult(authenticated=True, user=user)
 
 
-def directory(request: Any) -> Directory:
-    """List the users and teams in the caller's Stackure organization who can open the app.
+def directory_users(
+    request: Any, *, query: str = "", cursor: str = "", limit: int | None = None
+) -> DirectoryPage[DirectoryUser]:
+    """List the users in the caller's Stackure organization who can open the app.
 
-    For pickers and sharing. Authenticated by the request's session cookie, so
-    call it from a route behind :func:`auth`; MCP bearer tokens are not
-    accepted. Synchronous, like :func:`verify`.
+    For pickers and sharing. Returns one page, sorted by first name, then last
+    name. Authenticated by the request's session cookie, so call it from a
+    route behind :func:`auth`; MCP bearer tokens are not accepted. Synchronous,
+    like :func:`verify`.
 
     Args:
         request: A WSGI ``environ``, ASGI ``scope`` or framework request.
+        query: Search text, matching name, email and job title.
+        cursor: ``next_cursor`` from the previous page.
+        limit: Page size: 100 by default, 200 at most.
 
     Raises:
         StackureError: ``"auth"`` when there is no valid session, or any
             other transport or API failure.
 
     Example:
-        >>> d = directory(request)
-        >>> emails = [u.user_email for u in d.users]
+        >>> page = directory_users(request, query="ada")
+        >>> emails = [u.user_email for u in page.items]
+        >>> if page.next_cursor:
+        ...     page = directory_users(request, query="ada", cursor=page.next_cursor)
     """
-    return fetch_directory(to_request(request))
+    return fetch_directory_users(to_request(request), query, cursor, limit)
+
+
+def directory_teams(
+    request: Any, *, query: str = "", cursor: str = "", limit: int | None = None
+) -> DirectoryPage[Team]:
+    """List the teams in the caller's Stackure organization that have the app.
+
+    Every team when the app is available to everyone, otherwise the teams it's
+    shared with. Returns one page, sorted by name. Authenticated and called
+    like :func:`directory_users`; ``query`` matches the team name.
+
+    Raises:
+        StackureError: ``"auth"`` when there is no valid session, or any
+            other transport or API failure.
+
+    Example:
+        >>> names = [t.team_name for t in directory_teams(request, limit=50).items]
+    """
+    return fetch_directory_teams(to_request(request), query, cursor, limit)
 
 
 def user_from_request(source: Any) -> User | None:

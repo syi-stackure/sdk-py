@@ -7,10 +7,11 @@ import os
 import socket
 import time
 import urllib.parse
+from collections.abc import Callable
 from typing import Any
 
 from .errors import StackureError
-from .types import Directory, DirectoryUser, MagicLinkResponse, Request, Session, Team, User
+from .types import DirectoryPage, DirectoryUser, MagicLinkResponse, Request, Session, Team, User
 from .validation import is_uuid, validate_email, validate_uuid
 
 _DEFAULT_BASE_URL = "https://stackure.com"
@@ -127,6 +128,7 @@ def _request(
     ua: str = "",
     ip: str = "",
     parse: bool = True,
+    got: dict[str, str] | None = None,
 ) -> Any:
     base = urllib.parse.urlsplit(base_url())
     target = base.path + path
@@ -159,6 +161,9 @@ def _request(
             conn.sock.settimeout(_left(deadline))
             conn.request(method, target, body=data, headers=headers)
             resp = conn.getresponse()
+            if got is not None:
+                got.clear()
+                got.update((k.lower(), v) for k, v in resp.getheaders())
             status, payload = resp.status, _read(resp) if parse else b""
         except TimeoutError as exc:
             raise _timeout() from exc
@@ -216,8 +221,21 @@ def _user(data: Any) -> User | None:
         raise StackureError("network", "unexpected user payload format") from exc
 
 
+def _team(t: Any) -> Team:
+    return Team(team_id=t["team_id"], team_name=t["team_name"])
+
+
 def _teams(data: Any) -> tuple[Team, ...]:
-    return tuple(Team(team_id=t["team_id"], team_name=t["team_name"]) for t in data or ())
+    return tuple(_team(t) for t in data or ())
+
+
+def _directory_user(u: Any) -> DirectoryUser:
+    return DirectoryUser(
+        user_id=u["user_id"],
+        user_email=u["user_email"],
+        user_first_name=u["user_first_name"],
+        user_last_name=u["user_last_name"],
+    )
 
 
 def send_magic_link(email: str) -> MagicLinkResponse:
@@ -270,7 +288,7 @@ def validate_token(token: str, request: Request) -> Session:
             sign_in_url=f"{base_url()}/sign-in/magic-link?app_id={app}",
         )
 
-    data = _get_with_session("/api/public/auth/session/validate", app, token, request)
+    data = _get_with_session("/api/public/auth/session/validate", {"app_id": app}, token, request)
     return Session(
         authenticated=bool(data.get("authenticated")),
         user=_user(data.get("user")),
@@ -278,8 +296,31 @@ def validate_token(token: str, request: Request) -> Session:
     )
 
 
-def fetch_directory(request: Request) -> Directory:
-    """List the users and teams in the caller's organization who can open the app.
+def fetch_directory_users(
+    request: Request, query: str, cursor: str, limit: int | None
+) -> DirectoryPage[DirectoryUser]:
+    """One page of the users in the caller's organization who can open the app."""
+    return _fetch_directory(
+        "/api/public/directory/users", _directory_user, request, query, cursor, limit
+    )
+
+
+def fetch_directory_teams(
+    request: Request, query: str, cursor: str, limit: int | None
+) -> DirectoryPage[Team]:
+    """One page of the teams in the caller's organization that have the app."""
+    return _fetch_directory("/api/public/directory/teams", _team, request, query, cursor, limit)
+
+
+def _fetch_directory[T](
+    path: str,
+    item: Callable[[Any], T],
+    request: Request,
+    query: str,
+    cursor: str,
+    limit: int | None,
+) -> DirectoryPage[T]:
+    """Fetch one directory page, decoding each entry with ``item``.
 
     A request without a well-formed session token raises ``"auth"`` without a
     Stackure call.
@@ -287,37 +328,45 @@ def fetch_directory(request: Request) -> Directory:
     Raises:
         StackureError: On invalid input, or any transport or API failure.
     """
-    app = app_id()
+    q = {"app_id": app_id()}
     token = session_token(request)
     if not is_uuid(token):
         raise StackureError("auth", "invalid session")
+    if query:
+        q["q"] = query
+    if cursor:
+        q["cursor"] = cursor
+    if limit is not None:
+        q["limit"] = str(limit)
 
-    data = _get_with_session("/api/public/directory", app, token, request)
+    got: dict[str, str] = {}
+    data = _get_with_session(path, q, token, request, got)
+    total = got.get("x-total-count", "")
     try:
-        return Directory(
-            users=tuple(
-                DirectoryUser(
-                    user_id=u["user_id"],
-                    user_email=u["user_email"],
-                    user_first_name=u["user_first_name"],
-                    user_last_name=u["user_last_name"],
-                )
-                for u in data["users"]
-            ),
-            teams=_teams(data["teams"]),
+        return DirectoryPage(
+            items=tuple(item(x) for x in data),
+            next_cursor=got.get("x-next-cursor") or None,
+            total=int(total) if total.isdecimal() else None,
         )
     except (KeyError, TypeError) as exc:
         raise StackureError("network", "unexpected API response format") from exc
 
 
-def _get_with_session(path: str, app: str, token: str, request: Request) -> Any:
+def _get_with_session(
+    path: str,
+    query: dict[str, str],
+    token: str,
+    request: Request,
+    got: dict[str, str] | None = None,
+) -> Any:
     return _request(
         "GET",
         path,
-        query={"app_id": app},
+        query=query,
         token=token,
         ua=request.headers.get("user-agent", ""),
         ip=client_ip(request),
+        got=got,
     )
 
 

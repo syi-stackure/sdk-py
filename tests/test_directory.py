@@ -1,4 +1,4 @@
-"""Tests for identity facts and :func:`stackure.directory` against a local stand-in for Stackure."""
+"""Tests for identity facts and the directory calls against a local stand-in for Stackure."""
 
 import dataclasses
 import http.server
@@ -22,16 +22,17 @@ ADA = {
 }
 USER = {**ADA, "account_id": "a1f4c8d2-7e3b-4956-8d0a-2b6c9e4f1d37"}
 OPS = {"team_id": "4b5c6d7e-8f9a-4b1c-8d2e-3f4a5b6c7d8e", "team_name": "Ops"}
-DIRECTORY = f"/api/public/directory?app_id={APP_ID}"
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         server: Any = self.server
         server.seen.append((self.path, self.headers))
-        status, body = server.reply
+        status, body, *headers = server.reply
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        for name, value in headers[0].items() if headers else ():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -115,63 +116,88 @@ class DirectoryTest(unittest.TestCase):
                 self.assertEqual(result.user, want)
                 self.assertEqual(self.mcp_user(), want)
 
-    def test_directory_lists_users_and_teams(self) -> None:
-        self.server.reply = (200, json.dumps({"users": [ADA], "teams": [OPS]}).encode())
-        want = stackure.Directory(
-            users=(stackure.DirectoryUser(**ADA),), teams=(stackure.Team(**OPS),)
+    def lists(self) -> Any:
+        return (
+            (stackure.directory_users, "/api/public/directory/users", ADA, stackure.DirectoryUser(**ADA)),
+            (stackure.directory_teams, "/api/public/directory/teams", OPS, stackure.Team(**OPS)),
         )
+
+    def test_directory_pages(self) -> None:
         cookie = f"theme=dark; stackure_session={TOKEN}"
-        for request in (_environ(cookie=cookie), _scope(cookie=cookie)):
-            with self.subTest(request=request):
-                self.server.seen = []
-                self.assertEqual(stackure.directory(request), want)
-                [(path, headers)] = self.server.seen
-                self.assertEqual(path, DIRECTORY)
-                self.assertEqual(headers["X-App-Secret"], SECRET)
-                self.assertEqual(headers["Cookie"], f"session={TOKEN}")
-                self.assertIsNone(headers["Authorization"])
-                self.assertEqual(headers["User-Agent"], "browser/1")
-                self.assertEqual(headers["X-Forwarded-For"], "203.0.113.7")
+        for fn, path, raw, item in self.lists():
+            for kwargs, query, headers, want in (
+                (
+                    {"query": "ada lo", "limit": 2},
+                    "&q=ada+lo&limit=2",
+                    {"X-Next-Cursor": "c1", "X-Total-Count": "3"},
+                    stackure.DirectoryPage(items=(item,), next_cursor="c1", total=3),
+                ),
+                ({"cursor": "c1"}, "&cursor=c1", {}, stackure.DirectoryPage(items=(item,))),
+                ({}, "", {"X-Total-Count": "many"}, stackure.DirectoryPage(items=(item,))),
+            ):
+                for request in (_environ(cookie=cookie), _scope(cookie=cookie)):
+                    with self.subTest(path=path, kwargs=kwargs, request=request):
+                        self.server.seen = []
+                        self.server.reply = (200, json.dumps([raw]).encode(), headers)
+                        self.assertEqual(fn(request, **kwargs), want)
+                        [(sent, headers_sent)] = self.server.seen
+                        self.assertEqual(sent, f"{path}?app_id={APP_ID}{query}")
+                        self.assertEqual(headers_sent["X-App-Secret"], SECRET)
+                        self.assertEqual(headers_sent["Cookie"], f"session={TOKEN}")
+                        self.assertIsNone(headers_sent["Authorization"])
+                        self.assertEqual(headers_sent["User-Agent"], "browser/1")
+                        self.assertEqual(headers_sent["X-Forwarded-For"], "203.0.113.7")
+            with self.subTest(path=path, empty=True):
+                self.server.reply = (200, b"[]", {"X-Total-Count": "0"})
+                self.assertEqual(
+                    fn(_environ(cookie=cookie)), stackure.DirectoryPage(items=(), total=0)
+                )
 
     def test_directory_errors(self) -> None:
-        for status, body, code, calls in (
-            (401, b'{"error":"invalid session"}', "auth", 1),
-            (401, b'{"error":"invalid app secret"}', "auth", 1),
-            (400, b'{"error":"invalid app_id format"}', "network", 1),
-            (429, b'{"error":"rate limited"}', "network", 1),
-            (500, b'{"error":"internal"}', "network", 2),
-            (200, b'{"users":[{"user_id":"x"}],"teams":[]}', "network", 1),
-        ):
-            with self.subTest(status=status, body=body):
-                self.server.seen, self.server.reply = [], (status, body)
-                with self.assertRaises(stackure.StackureError) as caught:
-                    stackure.directory(_environ(cookie=f"stackure_session={TOKEN}"))
-                self.assertEqual(caught.exception.code, code)
-                if status == 401:
-                    self.assertEqual(caught.exception.message, body.decode())
-                    self.assertEqual(caught.exception.status_code, 401)
-                self.assertEqual([path for path, _ in self.server.seen], [DIRECTORY] * calls)
+        for fn, path, _, _ in self.lists():
+            for status, body, code, calls in (
+                (401, b'{"error":"invalid session"}', "auth", 1),
+                (401, b'{"error":"invalid app secret"}', "auth", 1),
+                (400, b'{"error":"invalid input: cursor"}', "network", 1),
+                (429, b'{"error":"rate limited"}', "network", 1),
+                (500, b'{"error":"internal"}', "network", 2),
+                (200, b'[{"user_id":"x"}]', "network", 1),
+                (200, b'{"users":[],"teams":[]}', "network", 1),
+            ):
+                with self.subTest(path=path, status=status, body=body):
+                    self.server.seen, self.server.reply = [], (status, body)
+                    with self.assertRaises(stackure.StackureError) as caught:
+                        fn(_environ(cookie=f"stackure_session={TOKEN}"))
+                    self.assertEqual(caught.exception.code, code)
+                    if status == 401:
+                        self.assertEqual(caught.exception.message, body.decode())
+                        self.assertEqual(caught.exception.status_code, 401)
+                    self.assertEqual(
+                        [p for p, _ in self.server.seen], [f"{path}?app_id={APP_ID}"] * calls
+                    )
 
     def test_directory_without_a_session_is_auth_without_a_call(self) -> None:
-        for headers in (
-            {},
-            {"cookie": "stackure_session=not-a-token"},
-            {"cookie": f"session={TOKEN}"},
-            {"authorization": f"Bearer {TOKEN}"},
-        ):
-            with self.subTest(headers=headers):
-                with self.assertRaises(stackure.StackureError) as caught:
-                    stackure.directory(_environ(**headers))
-                self.assertEqual(
-                    (caught.exception.code, caught.exception.message, caught.exception.status_code),
-                    ("auth", "invalid session", None),
-                )
+        for fn, _, _, _ in self.lists():
+            for headers in (
+                {},
+                {"cookie": "stackure_session=not-a-token"},
+                {"cookie": f"session={TOKEN}"},
+                {"authorization": f"Bearer {TOKEN}"},
+            ):
+                with self.subTest(fn=fn, headers=headers):
+                    with self.assertRaises(stackure.StackureError) as caught:
+                        fn(_environ(**headers))
+                    self.assertEqual(
+                        (caught.exception.code, caught.exception.message, caught.exception.status_code),
+                        ("auth", "invalid session", None),
+                    )
         self.assertEqual(self.server.seen, [])
 
     def test_directory_without_an_app_secret_is_validation(self) -> None:
-        with mock.patch.dict(os.environ):
-            del os.environ["STACKURE_APP_SECRET"]
-            with self.assertRaises(stackure.StackureError) as caught:
-                stackure.directory(_environ(cookie=f"stackure_session={TOKEN}"))
-        self.assertEqual(caught.exception.code, "validation")
+        for fn, _, _, _ in self.lists():
+            with self.subTest(fn=fn), mock.patch.dict(os.environ):
+                del os.environ["STACKURE_APP_SECRET"]
+                with self.assertRaises(stackure.StackureError) as caught:
+                    fn(_environ(cookie=f"stackure_session={TOKEN}"))
+                self.assertEqual(caught.exception.code, "validation")
         self.assertEqual(self.server.seen, [])
