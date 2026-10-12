@@ -133,6 +133,12 @@ class DirectoryTest(unittest.TestCase):
                     stackure.DirectoryPage(items=(item,), next_cursor="c1", total=3),
                 ),
                 ({"cursor": "c1"}, "&cursor=c1", {}, stackure.DirectoryPage(items=(item,))),
+                (
+                    {"ids": ["a", "b"], "limit": 200},
+                    "&limit=200&id=a&id=b",
+                    {},
+                    stackure.DirectoryPage(items=(item,)),
+                ),
                 ({}, "", {"X-Total-Count": "many"}, stackure.DirectoryPage(items=(item,))),
             ):
                 for request in (_environ(cookie=cookie), _scope(cookie=cookie)):

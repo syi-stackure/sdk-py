@@ -7,7 +7,7 @@ import os
 import socket
 import time
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from .errors import StackureError
@@ -121,7 +121,7 @@ def _request(
     path: str,
     *,
     body: Any = None,
-    query: dict[str, str] | None = None,
+    query: dict[str, str] | list[tuple[str, str]] | None = None,
     token: str = "",
     bearer: str = "",
     credential: str = "",
@@ -297,19 +297,21 @@ def validate_token(token: str, request: Request) -> Session:
 
 
 def fetch_directory_users(
-    request: Request, query: str, cursor: str, limit: int | None
+    request: Request, query: str, cursor: str, limit: int | None, ids: Sequence[str]
 ) -> DirectoryPage[DirectoryUser]:
     """One page of the users in the caller's organization who can open the app."""
     return _fetch_directory(
-        "/api/public/directory/users", _directory_user, request, query, cursor, limit
+        "/api/public/directory/users", _directory_user, request, query, cursor, limit, ids
     )
 
 
 def fetch_directory_teams(
-    request: Request, query: str, cursor: str, limit: int | None
+    request: Request, query: str, cursor: str, limit: int | None, ids: Sequence[str]
 ) -> DirectoryPage[Team]:
     """One page of the teams in the caller's organization that have the app."""
-    return _fetch_directory("/api/public/directory/teams", _team, request, query, cursor, limit)
+    return _fetch_directory(
+        "/api/public/directory/teams", _team, request, query, cursor, limit, ids
+    )
 
 
 def _fetch_directory[T](
@@ -319,6 +321,7 @@ def _fetch_directory[T](
     query: str,
     cursor: str,
     limit: int | None,
+    ids: Sequence[str],
 ) -> DirectoryPage[T]:
     """Fetch one directory page, decoding each entry with ``item``.
 
@@ -328,16 +331,17 @@ def _fetch_directory[T](
     Raises:
         StackureError: On invalid input, or any transport or API failure.
     """
-    q = {"app_id": app_id()}
+    q = [("app_id", app_id())]
     token = session_token(request)
     if not is_uuid(token):
         raise StackureError("auth", "invalid session")
     if query:
-        q["q"] = query
+        q.append(("q", query))
     if cursor:
-        q["cursor"] = cursor
+        q.append(("cursor", cursor))
     if limit is not None:
-        q["limit"] = str(limit)
+        q.append(("limit", str(limit)))
+    q += [("id", i) for i in ids]
 
     got: dict[str, str] = {}
     data = _get_with_session(path, q, token, request, got)
@@ -354,7 +358,7 @@ def _fetch_directory[T](
 
 def _get_with_session(
     path: str,
-    query: dict[str, str],
+    query: dict[str, str] | list[tuple[str, str]],
     token: str,
     request: Request,
     got: dict[str, str] | None = None,

@@ -108,6 +108,8 @@ pickers and sharing. Each call returns a :class:`DirectoryPage`, sorted by
 name: ``query`` searches, ``limit`` sets the page size (100 by default, 200 at
 most) and ``next_cursor``, passed back as ``cursor``, gets the next page.
 ``total`` is set on the first page when there are 10,000 matches or fewer.
+``ids`` returns only those IDs that can open the app, up to 200, to check or
+name people and teams you already store.
 Both are authenticated by the request's session cookie, so call them from a
 route behind :func:`auth`; MCP bearer tokens are not accepted. No valid session
 raises ``"auth"``.
