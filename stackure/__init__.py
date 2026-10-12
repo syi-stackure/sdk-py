@@ -1,7 +1,7 @@
 """Stackure is the Python SDK for the Stackure authentication API.
 
 Stackure provides passwordless B2B authentication. This SDK wraps the public
-API behind seven free functions and two middlewares.
+API behind 7 free functions and 2 middlewares.
 
 Quickstart
 ----------
@@ -29,7 +29,7 @@ Send a magic-link email::
     stackure.send_magic_link("user@example.com")
 
 Sign the user out of Stackure everywhere and clear the app's cookie, from a
-route that takes every method on the logout path::
+route that takes every method on the sign-out path::
 
     r = stackure.logout(request)
 
@@ -117,9 +117,9 @@ not a UUID.
 ``STACKURE_BASE_URL`` overrides the API host (default
 ``https://stackure.com``).
 
-A newly registered app is not usable by anyone, even its creator, until it is
-shared with the organization or assigned to a team in Stackure. Do that before
-testing sign-in.
+People can open a newly registered app once an app admin gives it to everyone
+in the organization or to one of their teams in Stackure. App admins and the
+owner can always open it, so they can test sign-in first.
 
 Every call has one 2-second deadline covering connect, headers, body and the
 single retry. Calls retry once after 500 ms on a 5xx or a connection failure,

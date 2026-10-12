@@ -72,10 +72,10 @@ def _from_asgi(scope: dict[str, Any]) -> Request:
 
 
 def to_request(source: Any) -> Request:
-    """Normalise a WSGI ``environ``, an ASGI ``scope``, or a framework request.
+    """Normalize a WSGI ``environ``, an ASGI ``scope`` or a framework request.
 
     Accepts anything exposing ``.scope`` (Starlette, FastAPI), ``.environ``
-    (Flask, Werkzeug), or ``.META`` (Django).
+    (Flask, Werkzeug) or ``.META`` (Django).
     """
     if isinstance(source, Request):
         return source
@@ -107,7 +107,7 @@ def verify(request: Any) -> VerifyResult:
     API failures come back as a 500 result.
 
     Args:
-        request: A WSGI ``environ``, ASGI ``scope``, or framework request.
+        request: A WSGI ``environ``, ASGI ``scope`` or framework request.
 
     Example:
         >>> result = verify(request)
@@ -137,7 +137,7 @@ def directory(request: Any) -> Directory:
     accepted. Synchronous, like :func:`verify`.
 
     Args:
-        request: A WSGI ``environ``, ASGI ``scope``, or framework request.
+        request: A WSGI ``environ``, ASGI ``scope`` or framework request.
 
     Raises:
         StackureError: ``"auth"`` when there is no valid session, or any
@@ -495,7 +495,7 @@ def mcp() -> Callable[[Any], Any]:
 def logout(request: Any) -> Redirect:
     """Sign the user out of Stackure everywhere and clear the app's session cookie.
 
-    Mount it for every method on the logout path. Trigger it with a form or
+    Mount it for every method on the sign-out path. Trigger it with a form or
     button that POSTs from the app's own page; a link or any other request is
     sent to Stackure's sign-out page, where the user confirms.
 

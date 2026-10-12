@@ -344,7 +344,7 @@ def validate_mcp(url: str, token: str, request: Request) -> tuple[User | None, s
 
 
 def sign_out(token: str, request: Request) -> None:
-    """End the user's access everywhere, authorised by the app session ``token``.
+    """End the user's access everywhere, authorized by the app session ``token``.
 
     A token that is not well formed is never sent. Any 2xx status is success;
     the response body is neither read nor parsed.

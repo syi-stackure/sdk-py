@@ -26,7 +26,7 @@ dependencies = []
 [project.urls]
 Homepage = "https://stackure.com"
 Repository = "https://github.com/syi-stackure/sdk-py"
-Documentation = "https://docs.stackure.com"
+Documentation = "https://stackure.com/docs/python"
 "Bug Tracker" = "https://github.com/syi-stackure/sdk-py/issues"
 
 [tool.hatch.build.targets.wheel]
@@ -34,3 +34,6 @@ packages = ["stackure"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "stackure/py.typed" = "stackure/py.typed"
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/CLAUDE.md"]

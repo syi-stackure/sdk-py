@@ -3,13 +3,11 @@
 [![Check build](https://github.com/syi-stackure/sdk-py/actions/workflows/check-build.yml/badge.svg)](https://github.com/syi-stackure/sdk-py/actions/workflows/check-build.yml)
 [![PyPI version](https://img.shields.io/pypi/v/stackure.svg)](https://pypi.org/project/stackure/)
 [![Python versions](https://img.shields.io/pypi/pyversions/stackure.svg)](https://pypi.org/project/stackure/)
-[![PyPI - Downloads](https://img.shields.io/pypi/dm/stackure.svg)](https://pypi.org/project/stackure/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/stackure.svg)](https://pypi.org/project/stackure/)
 [![Trusted publisher](https://img.shields.io/badge/pypi-trusted--publisher-blue)](https://docs.pypi.org/trusted-publishers/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-Passwordless magic-link authentication SDK for Python — drop-in ASGI and WSGI middleware, zero dependencies.
-
-Protect an app with one line, or verify sessions and send magic links directly against the [Stackure](https://stackure.com) auth API.
+Add Stackure sign-in to an ASGI or WSGI app. Zero dependencies.
 
 ## Install
 
@@ -17,186 +15,24 @@ Protect an app with one line, or verify sessions and send magic links directly a
 pip install stackure
 ```
 
-Requires Python 3.14+.
+Needs Python 3.14 or later.
 
-## Configure
+## Example
 
-```bash
-export STACKURE_APP_ID=...       # the app's UUID, shown on the app page in Stackure
-export STACKURE_APP_SECRET=...   # from the app page in Stackure, shown once
-```
-
-The secret is sent as `X-App-Secret` on every call except sign-out. The first call that needs either raises `StackureError("validation")` if it is missing or, for the app ID, not a UUID. `STACKURE_BASE_URL` optionally overrides the API host.
-
-A newly registered app is not usable by anyone, even its creator, until it is shared with the organization or assigned to a team in Stackure. Do that before testing sign-in.
-
-## Protect an app
+Set `STACKURE_APP_ID` and `STACKURE_APP_SECRET` from the app's page in Stackure, then wrap your ASGI or WSGI app:
 
 ```python
 import stackure
 
-# ASGI — FastAPI, Starlette, Quart
 app = stackure.auth()(app)
 
-# WSGI — Flask, Django
-flask_app.wsgi_app = stackure.auth()(flask_app.wsgi_app)
-```
-
-The same wrapper handles both; it detects the protocol it was called under.
-
-Access the authenticated user in your view:
-
-```python
+# in a view
 user = stackure.user_from_request(request)
-print(user.user_email, user.account_id)
 ```
 
-- API requests get JSON errors
-- Browser requests get redirected to sign-in
-- The sign-in handoff is automatic: Stackure POSTs a `session_token` (an app-scoped session token valid only for this app) back to your app, the middleware validates it and stores it as a `stackure_session` cookie on your domain (not `session`, which Flask uses for its own session). Handoff bodies over 4 KB are ignored.
+## Documentation
 
-## MCP
-
-```python
-# Wrap the MCP app itself, then route to it beside the rest of your app
-mcp = stackure.mcp()(mcp_app)
-
-# Starlette / FastAPI
-routes = [Mount("/mcp", mcp)]
-```
-
-AI clients (Claude, Claude Code, VS Code, Cursor) sign users in through
-Stackure. This one line checks every MCP request in real time with the same app
-secret; there is no extra setup. The MCP endpoint must be served from the same
-site as the app's registered URL unless an MCP URL is set for the app in
-Stackure.
-
-- Wraps ASGI and WSGI apps like `auth`, with the same `user_from_request`
-- Reads `Authorization: Bearer` and ignores cookies, so keep the MCP route outside `stackure.auth`
-- With Starlette or FastAPI `Mount`, the address AI clients use ends in a slash: `/mcp/`
-- Not signed in gets a 401 with `WWW-Authenticate`, a failed check a 503; never a redirect
-
-## Identity facts
-
-Every authenticated `User`, from `auth` or `mcp`, also carries:
-
-- `user_is_app_admin`: the user is an app admin or owner in their Stackure org, in charge of its apps
-- `user_teams`: the Stackure teams they belong to (a tuple of `Team(team_id, team_name)`), empty when none
-
-List the users and teams in the caller's org who can open the app, for pickers and sharing:
-
-```python
-d = stackure.directory(request)
-# d.users: DirectoryUser(user_id, user_email, user_first_name, user_last_name)
-# d.teams: Team(team_id, team_name)
-```
-
-`directory` accepts what `verify` accepts and uses the request's session cookie, so call it from a route behind `auth`; MCP bearer tokens are not accepted. No valid session raises `StackureError("auth")`. It is synchronous; in an `async def` view use `await asyncio.to_thread(stackure.directory, request)`.
-
-Stackure defines no in-app permissions. Your app decides what these facts mean.
-
-## Requirements
-
-Sessions are not bound to the browser's user agent or IP. The SDK still
-forwards the original `User-Agent` and `X-Forwarded-For` when validating from
-your server, but they are informational only.
-
-Every request with a session token is validated against Stackure, so revocation
-is immediate. Requests without a well-formed token get the sign-in URL without a
-Stackure call.
-
-Every call has one 2-second deadline covering connect, headers, body and the
-single retry. Calls retry once after 500 ms on a 5xx or a connection failure,
-never on a timeout. A timeout anywhere, including while reading the body,
-raises `StackureError("timeout")`.
-
-## Verify manually
-
-```python
-result = stackure.verify(request)
-
-if not result.authenticated:
-    # result.error.code, result.error.message, result.error.sign_in_url
-    ...
-
-# result.user
-```
-
-`verify` never raises — transport and API failures come back as a 500 result.
-It accepts a WSGI `environ`, an ASGI `scope`, or a framework request object
-(Starlette, FastAPI, Flask, Django).
-
-## Send a magic link
-
-```python
-resp = stackure.send_magic_link("user@example.com")
-# resp.message
-```
-
-## Log out
-
-```python
-METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
-
-# Flask
-@app.route("/logout", methods=METHODS)
-def logout():
-    r = stackure.logout(request)
-    return "", r.status, r.headers
-
-# FastAPI
-@app.api_route("/logout", methods=METHODS, include_in_schema=False)
-async def logout(request: Request):
-    r = await asyncio.to_thread(stackure.logout, request)
-    return Response(status_code=r.status, headers=dict(r.headers))
-
-# Starlette: the same function, routed with
-Route("/logout", logout, methods=METHODS)
-```
-
-```html
-<form method="post" action="/logout"><button>Sign out</button></form>
-```
-
-Mount it for every method on the logout path. Trigger it with a form or button
-that POSTs from the app's own page; a link or any other request is sent to
-Stackure's sign-out page, where the user confirms.
-
-A same-origin POST signs the user out of Stackure everywhere with one
-server-side call, clears the app's cookie and redirects to Stackure. If that
-call fails, the redirect goes to Stackure's sign-out page instead, where the
-user can finish signing out.
-
-`logout` is synchronous and returns a `Redirect` (`status`, `headers`) for your
-framework to send; it never raises. It blocks for up to 2 seconds, hence
-`asyncio.to_thread` in the `async def` view.
-
-## Errors
-
-Everything except `verify` and `logout` raises `StackureError`; those two
-never raise. Switch on `.code`:
-
-```python
-from stackure import StackureError
-
-try:
-    stackure.send_magic_link(email)
-except StackureError as err:
-    match err.code:
-        case "validation": ...  # bad input
-        case "auth": ...        # 401 from the API
-        case "forbidden": ...   # 403 from the API
-        case "timeout": ...     # request exceeded the 2s deadline
-        case "network": ...     # everything else
-```
-
-## Contributing
-
-Open a PR.
-
-## Security
-
-Report vulnerabilities via [GitHub Security Advisories](https://github.com/syi-stackure/sdk-py/security/advisories/new). Releases publish to PyPI via [OIDC trusted publishing](https://docs.pypi.org/trusted-publishers/) with [GitHub build-provenance attestations](https://docs.github.com/en/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds).
+Configuration, sign-in handoff, MCP, sign-out, errors and limits: [stackure.com/docs/python](https://stackure.com/docs/python)
 
 ## License
 
