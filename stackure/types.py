@@ -88,7 +88,7 @@ class VerifyError:
     """Why a :func:`verify` call did not authenticate.
 
     Attributes:
-        code: HTTP status code — 401 or 500.
+        code: HTTP status code: 401 or 500.
         message: Human-readable description.
         sign_in_url: Where to send an unauthenticated browser to sign in.
     """
@@ -118,7 +118,7 @@ class Session:
     """Raw :func:`validate_session` response.
 
     Attributes:
-        authenticated: Whether Stackure recognised the session.
+        authenticated: Whether Stackure recognized the session.
         user: The user, when authenticated.
         sign_in_url: Where to send the browser to sign in, when not.
     """
@@ -130,9 +130,9 @@ class Session:
 
 @dataclass(frozen=True)
 class Request:
-    """Normalised view of an incoming HTTP request.
+    """Normalized view of an incoming HTTP request.
 
-    Built automatically from a WSGI ``environ``, an ASGI ``scope``, or a
+    Built automatically from a WSGI ``environ``, an ASGI ``scope`` or a
     framework request object. You rarely construct one yourself.
 
     Attributes:
