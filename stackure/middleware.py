@@ -6,7 +6,7 @@ import io
 import json
 import logging
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from http import HTTPStatus
 from inspect import iscoroutinefunction
 from typing import Any
@@ -140,7 +140,12 @@ def verify(request: Any) -> VerifyResult:
 
 
 def directory_users(
-    request: Any, *, query: str = "", cursor: str = "", limit: int | None = None
+    request: Any,
+    *,
+    query: str = "",
+    cursor: str = "",
+    limit: int | None = None,
+    ids: Sequence[str] = (),
 ) -> DirectoryPage[DirectoryUser]:
     """List the users in the caller's Stackure organization who can open the app.
 
@@ -154,6 +159,8 @@ def directory_users(
         query: Search text, matching name, email and job title.
         cursor: ``next_cursor`` from the previous page.
         limit: Page size: 100 by default, 200 at most.
+        ids: Only these IDs that can open the app, up to 200, to check or
+            name people you already store.
 
     Raises:
         StackureError: ``"auth"`` when there is no valid session, or any
@@ -165,11 +172,16 @@ def directory_users(
         >>> if page.next_cursor:
         ...     page = directory_users(request, query="ada", cursor=page.next_cursor)
     """
-    return fetch_directory_users(to_request(request), query, cursor, limit)
+    return fetch_directory_users(to_request(request), query, cursor, limit, ids)
 
 
 def directory_teams(
-    request: Any, *, query: str = "", cursor: str = "", limit: int | None = None
+    request: Any,
+    *,
+    query: str = "",
+    cursor: str = "",
+    limit: int | None = None,
+    ids: Sequence[str] = (),
 ) -> DirectoryPage[Team]:
     """List the teams in the caller's Stackure organization that have the app.
 
@@ -184,7 +196,7 @@ def directory_teams(
     Example:
         >>> names = [t.team_name for t in directory_teams(request, limit=50).items]
     """
-    return fetch_directory_teams(to_request(request), query, cursor, limit)
+    return fetch_directory_teams(to_request(request), query, cursor, limit, ids)
 
 
 def user_from_request(source: Any) -> User | None:
