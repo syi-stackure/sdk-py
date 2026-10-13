@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "stackure"
 version = "0.0.0"
-description = "Official Stackure authentication SDK for Python"
+description = "Stackure for Python: passwordless auth for B2B apps as ASGI and WSGI middleware. Zero dependencies."
 readme = "README.md"
 requires-python = ">=3.14"
 license = { file = "LICENSE" }
 authors = [{ name = "Stackure", email = "support@stackure.com" }]
-keywords = ["stackure", "authentication", "auth", "sso", "magic-link", "passwordless", "verify", "sdk"]
+keywords = ["stackure", "authentication", "auth", "passwordless", "magic-link", "b2b", "rbac", "mcp", "middleware", "asgi", "wsgi"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -19,6 +19,10 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Security",
+    "Framework :: Django",
+    "Framework :: FastAPI",
+    "Framework :: Flask",
     "Typing :: Typed",
 ]
 dependencies = []
