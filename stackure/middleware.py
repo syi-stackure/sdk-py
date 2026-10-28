@@ -1,10 +1,14 @@
 """Session verification and the ASGI/WSGI authentication middleware."""
 
 import asyncio
+import base64
 import functools
+import hashlib
 import io
 import json
 import logging
+import re
+import secrets
 import urllib.parse
 from collections.abc import Callable, Sequence
 from http import HTTPStatus
@@ -13,15 +17,18 @@ from typing import Any
 
 from .client import (
     APP_COOKIE,
+    CODE_COOKIE,
+    CODE_PARAM,
     TOKEN_PARAM,
+    VERIFIER_COOKIE,
     base_url,
     cookie,
+    exchange_code,
     fetch_directory_teams,
     fetch_directory_users,
     session_token,
     sign_out,
     validate_mcp,
-    validate_session,
     validate_token,
     origin,
 )
@@ -40,6 +47,11 @@ _logger = logging.getLogger(__name__)
 _USER_KEY = "stackure.user"
 _MAX_HANDOFF_BODY = 4096
 _SESSION_MAX_AGE = 604800
+_CODE_MAX_AGE = 60
+_VERIFIER_MAX_AGE = 900
+_CODE_RE = re.compile(r"^[0-9a-f]{64}$")
+
+type _Reply = tuple[int, list[tuple[str, str]], bytes]
 
 
 def _from_wsgi(environ: dict[str, Any]) -> Request:
@@ -110,6 +122,11 @@ def _is_https(request: Request) -> bool:
     )
 
 
+def _is_loopback(request: Request) -> bool:
+    host = re.sub(r":[0-9]+$", "", request.headers.get("host", "").lower())
+    return host in ("localhost", "127.0.0.1")
+
+
 def verify(request: Any) -> VerifyResult:
     """Verify a request without raising.
 
@@ -124,8 +141,13 @@ def verify(request: Any) -> VerifyResult:
         >>> if not result.authenticated:
         ...     return result.error.message, result.error.code
     """
+    return _check(request)
+
+
+def _check(request: Any, dev: dict[str, str] | None = None) -> VerifyResult:
     try:
-        session = validate_session(to_request(request))
+        normalised = to_request(request)
+        session = validate_token(session_token(normalised), normalised, dev)
     except Exception as exc:
         _logger.error("stackure: verification error: %s", exc)
         return VerifyResult(error=VerifyError(500, "Authentication verification failed"))
@@ -210,8 +232,10 @@ def user_from_request(source: Any) -> User | None:
     return source.get(_USER_KEY) if isinstance(source, dict) else None
 
 
-def _cookie_header(value: str, secure: bool, max_age: int | None = None) -> tuple[str, str]:
-    parts = [f"{APP_COOKIE}={value}", "Path=/", "HttpOnly", "SameSite=Lax"]
+def _cookie_header(
+    name: str, value: str, secure: bool, max_age: int | None = None
+) -> tuple[str, str]:
+    parts = [f"{name}={value}", "Path=/", "HttpOnly", "SameSite=Lax"]
     if secure:
         parts.append("Secure")
     if max_age is not None:
@@ -227,10 +251,10 @@ def _self_url(request: Request) -> str:
     return path + (f"?{request.query}" if request.query else "")
 
 
-def _wants_form_token(request: Request) -> bool:
+def _wants_form(request: Request, origins: tuple[str, ...]) -> bool:
     return (
         request.method == "POST"
-        and request.headers.get("origin", "") == origin()
+        and request.headers.get("origin", "") in origins
         and request.headers.get("content-type", "").startswith(
             "application/x-www-form-urlencoded"
         )
@@ -251,9 +275,13 @@ def _same_origin_post(request: Request) -> bool:
     return authority == host.lower() and (scheme == "https" or not _is_https(request))
 
 
-def _form_token(raw: bytes) -> str:
+def _form_origins(request: Request) -> tuple[str, ...]:
+    return ("null", origin()) if _is_loopback(request) else (origin(),)
+
+
+def _form(raw: bytes) -> dict[str, str]:
     parsed = urllib.parse.parse_qs(raw.decode("utf-8", "replace"))
-    return parsed.get(TOKEN_PARAM, [""])[0]
+    return {key: values[0] for key, values in parsed.items()}
 
 
 def _adoptable(token: str, request: Request) -> bool:
@@ -291,33 +319,33 @@ class _Chain(io.RawIOBase):
         return len(d)
 
 
-def _handoff_wsgi(environ: dict[str, Any], request: Request) -> str:
-    if not _wants_form_token(request):
-        return ""
+def _handoff_wsgi(environ: dict[str, Any], request: Request) -> dict[str, str]:
+    if not _wants_form(request, _form_origins(request)):
+        return {}
     stream = environ["wsgi.input"]
     if environ.get("CONTENT_LENGTH") is None:
         raw = stream.read(_MAX_HANDOFF_BODY + 1)
         if len(raw) > _MAX_HANDOFF_BODY:
             environ["wsgi.input"] = io.BufferedReader(_Chain(raw, stream))
-            return ""
+            return {}
         environ["wsgi.input"] = io.BytesIO(raw)
-        return _form_token(raw)
+        return _form(raw)
     try:
         length = int(environ["CONTENT_LENGTH"] or 0)
     except ValueError:
-        return ""
+        return {}
     if length > _MAX_HANDOFF_BODY:
-        return ""
+        return {}
     raw = stream.read(length) if length > 0 else b""
     environ["wsgi.input"] = io.BytesIO(raw)
-    return _form_token(raw)
+    return _form(raw)
 
 
 async def _handoff_asgi(
     receive: Callable[[], Any], request: Request
-) -> tuple[str, Callable[[], Any]]:
-    if not _wants_form_token(request):
-        return "", receive
+) -> tuple[dict[str, str], Callable[[], Any]]:
+    if not _wants_form(request, _form_origins(request)):
+        return {}, receive
 
     seen: list[dict[str, Any]] = []
     size = 0
@@ -336,7 +364,78 @@ async def _handoff_asgi(
     async def replay() -> dict[str, Any]:
         return seen.pop(0) if seen else await receive()
 
-    return "" if over else _form_token(raw), replay
+    return {} if over else _form(raw), replay
+
+
+def _adopt(request: Request, form: dict[str, str]) -> _Reply | None:
+    token = form.get(TOKEN_PARAM, "") if _wants_form(request, (origin(),)) else ""
+    if not token or not _adoptable(token, request):
+        return None
+    session = _cookie_header(APP_COOKIE, token, _is_https(request), _SESSION_MAX_AGE)
+    return 303, [("Location", _self_url(request)), session], b""
+
+
+def _dev_sign_in(request: Request, verifier: str) -> dict[str, str]:
+    scheme = "https" if _is_https(request) else "http"
+    digest = hashlib.sha256(verifier.encode()).digest()
+    return {
+        "return": f"{scheme}://{request.headers.get('host', '')}{_self_url(request)}",
+        "challenge": base64.urlsafe_b64encode(digest).rstrip(b"=").decode(),
+    }
+
+
+def _stash(request: Request, form: dict[str, str]) -> _Reply | None:
+    code = form.get(CODE_PARAM, "") if _wants_form(request, ("null", origin())) else ""
+    if not _CODE_RE.fullmatch(code):
+        return None
+    stash = _cookie_header(CODE_COOKIE, code, _is_https(request), _CODE_MAX_AGE)
+    return 303, [("Location", _self_url(request)), stash], b""
+
+
+def _redeem(request: Request) -> _Reply | None:
+    code = cookie(request, CODE_COOKIE)
+    if not code:
+        return None
+    secure = _is_https(request)
+    clear = [_cookie_header(name, "", secure, 0) for name in (CODE_COOKIE, VERIFIER_COOKIE)]
+
+    try:
+        token = exchange_code(code, cookie(request, VERIFIER_COOKIE), request)
+    except Exception as exc:
+        _logger.error("stackure: localhost sign-in failed: %s", exc)
+        return (
+            401,
+            [*clear, ("Content-Type", "application/json")],
+            b'{"error":"localhost sign-in failed, reload to try again"}',
+        )
+
+    session = _cookie_header(APP_COOKIE, token, secure, _SESSION_MAX_AGE)
+    return 303, [("Location", _self_url(request)), *clear, session], b""
+
+
+def _auth_verify(request: Request, form: dict[str, str]) -> User | None | _Reply:
+    local = _is_loopback(request)
+    reply = _adopt(request, form)
+    if local and not reply:
+        reply = _stash(request, form) or _redeem(request)
+    if reply:
+        return reply
+
+    verifier = secrets.token_urlsafe(32) if local else ""
+    result = _check(request, _dev_sign_in(request, verifier) if local else None)
+    error = result.error
+    if not result.authenticated and error:
+        if error.code == 401 and _accepts_html(request) and error.sign_in_url:
+            headers = [("Location", error.sign_in_url)]
+            if local:
+                secure = _is_https(request)
+                headers.append(
+                    _cookie_header(VERIFIER_COOKIE, verifier, secure, _VERIFIER_MAX_AGE)
+                )
+            return 302, headers, b""
+        return error.code, [("Content-Type", "application/json")], _error_body(error)
+
+    return result.user
 
 
 def _send_wsgi(
@@ -387,6 +486,12 @@ def auth() -> Callable[[Any], Any]:
     :func:`user_from_request`). Browser requests get redirected to sign-in on
     401; API requests get JSON.
 
+    On localhost or 127.0.0.1 with the app's development secret, sign-in
+    returns to the page that asked for it: Stackure posts a one-time code
+    there, and the middleware swaps it for a session using the secret and a
+    check value it keeps in a cookie. Only app admins of the organization that
+    added the app can sign in this way.
+
     The app you wrap decides the protocol: an awaitable callable yields ASGI
     middleware, anything else yields WSGI middleware.
 
@@ -403,60 +508,23 @@ def auth() -> Callable[[Any], Any]:
                     return await app(scope, receive, send)
 
                 request = _from_asgi(scope)
-                token, receive = await _handoff_asgi(receive, request)
-                if token and await asyncio.to_thread(_adoptable, token, request):
-                    return await _send_asgi(
-                        send,
-                        303,
-                        [
-                            ("location", _self_url(request)),
-                            _cookie_header(token, _is_https(request), _SESSION_MAX_AGE),
-                        ],
-                    )
+                form, receive = await _handoff_asgi(receive, request)
+                result = await asyncio.to_thread(_auth_verify, request, form)
+                if isinstance(result, tuple):
+                    return await _send_asgi(send, *result)
 
-                result = await asyncio.to_thread(verify, request)
-                error = result.error
-                if not result.authenticated and error:
-                    if error.code == 401 and _accepts_html(request) and error.sign_in_url:
-                        return await _send_asgi(send, 302, [("location", error.sign_in_url)])
-                    return await _send_asgi(
-                        send,
-                        error.code,
-                        [("content-type", "application/json")],
-                        _error_body(error),
-                    )
-
-                scope[_USER_KEY] = result.user
+                scope[_USER_KEY] = result
                 return await app(scope, receive, send)
 
             return asgi
 
         def wsgi(environ: dict[str, Any], start_response: Any) -> Any:
             request = _from_wsgi(environ)
-            token = _handoff_wsgi(environ, request)
-            if token and _adoptable(token, request):
-                return _send_wsgi(
-                    start_response,
-                    303,
-                    [
-                        ("Location", _self_url(request)),
-                        _cookie_header(token, _is_https(request), _SESSION_MAX_AGE),
-                    ],
-                )
+            result = _auth_verify(request, _handoff_wsgi(environ, request))
+            if isinstance(result, tuple):
+                return _send_wsgi(start_response, *result)
 
-            result = verify(request)
-            error = result.error
-            if not result.authenticated and error:
-                if error.code == 401 and _accepts_html(request) and error.sign_in_url:
-                    return _send_wsgi(start_response, 302, [("Location", error.sign_in_url)])
-                return _send_wsgi(
-                    start_response,
-                    error.code,
-                    [("Content-Type", "application/json")],
-                    _error_body(error),
-                )
-
-            environ[_USER_KEY] = result.user
+            environ[_USER_KEY] = result
             return app(environ, start_response)
 
         return wsgi
@@ -568,7 +636,7 @@ def logout(request: Any) -> Redirect:
     try:
         normalised = to_request(request)
         if _same_origin_post(normalised):
-            clear = [_cookie_header("", _is_https(normalised), 0)]
+            clear = [_cookie_header(APP_COOKIE, "", _is_https(normalised), 0)]
             sign_out(session_token(normalised), normalised)
             path = "/"
     except Exception as exc:

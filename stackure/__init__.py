@@ -67,7 +67,8 @@ on them.
 
 Every request with a session token is validated against Stackure, so revoking
 a session takes effect immediately. Requests without a well-formed token get
-the sign-in URL without a Stackure call.
+the sign-in URL without a Stackure call, except under ``auth()`` on localhost,
+where the sign-in URL comes from Stackure.
 
 Content negotiation
 -------------------
@@ -133,7 +134,8 @@ owner can always open it, so they can test sign-in first.
 Every call has one 2-second deadline covering connect, headers, body and the
 single retry. Calls retry once after 500 ms on a 5xx or a connection failure,
 never on a timeout. A timeout anywhere, including while reading the body,
-surfaces as ``"timeout"``.
+surfaces as ``"timeout"``. The localhost sign-in code swap is never retried,
+because each code works only once.
 
 Errors
 ------

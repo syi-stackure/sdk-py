@@ -22,6 +22,9 @@ _RETRY_DELAY_S = 0.5
 SESSION_COOKIE = "session"
 APP_COOKIE = "stackure_session"
 TOKEN_PARAM = "session_token"
+CODE_PARAM = "stackure_code"
+CODE_COOKIE = "stackure_code"
+VERIFIER_COOKIE = "stackure_verifier"
 
 
 def origin() -> str:
@@ -84,8 +87,8 @@ def _response(deadline: float) -> type[http.client.HTTPResponse]:
     return R
 
 
-def _can_retry(attempt: int, deadline: float) -> bool:
-    return attempt < _MAX_RETRIES and deadline - time.monotonic() > _RETRY_DELAY_S
+def _can_retry(attempt: int, deadline: float, once: bool) -> bool:
+    return not once and attempt < _MAX_RETRIES and deadline - time.monotonic() > _RETRY_DELAY_S
 
 
 def _read(resp: Any) -> bytes:
@@ -121,6 +124,7 @@ def _request(
     path: str,
     *,
     body: Any = None,
+    once: bool = False,
     query: dict[str, str] | list[tuple[str, str]] | None = None,
     token: str = "",
     bearer: str = "",
@@ -168,13 +172,13 @@ def _request(
         except TimeoutError as exc:
             raise _timeout() from exc
         except (OSError, http.client.HTTPException) as exc:
-            if not _can_retry(attempt, deadline):
+            if not _can_retry(attempt, deadline, once):
                 raise StackureError("network", f"network request failed: {exc}") from exc
             continue
         finally:
             if conn:
                 conn.close()
-        if status >= 500 and _can_retry(attempt, deadline):
+        if status >= 500 and _can_retry(attempt, deadline, once):
             continue
         return _handle_response(status, payload, parse)
 
@@ -278,22 +282,56 @@ def validate_session(request: Request) -> Session:
     return validate_token(session_token(request), request)
 
 
-def validate_token(token: str, request: Request) -> Session:
-    """Validate an explicit session ``token`` for ``request``'s browser."""
+def validate_token(token: str, request: Request, dev: dict[str, str] | None = None) -> Session:
+    """Validate an explicit session ``token`` for ``request``'s browser.
+
+    ``dev`` holds the ``return`` and ``challenge`` query values of a localhost
+    sign-in. With it the call is made even without a well-formed token, so
+    Stackure can build that sign-in URL.
+    """
     app = app_id()
 
-    if not is_uuid(token):
+    if not is_uuid(token) and not dev:
         return Session(
             authenticated=False,
             sign_in_url=f"{base_url()}/sign-in/magic-link?app_id={app}",
         )
 
-    data = _get_with_session("/api/public/auth/session/validate", {"app_id": app}, token, request)
+    data = _get_with_session(
+        "/api/public/auth/session/validate",
+        {"app_id": app, **(dev or {})},
+        token if is_uuid(token) else "",
+        request,
+    )
     return Session(
         authenticated=bool(data.get("authenticated")),
         user=_user(data.get("user")),
         sign_in_url=data.get("sign_in_url") or "",
     )
+
+
+def exchange_code(code: str, verifier: str, request: Request) -> str:
+    """Swap a localhost sign-in ``code`` and its ``verifier`` for an app session token.
+
+    Never retried: a code works once, and using it again ends the session it
+    was swapped for.
+
+    Raises:
+        StackureError: On any transport or API failure, or a response without
+            a well-formed token.
+    """
+    data = _request(
+        "POST",
+        "/api/public/auth/session/exchange",
+        body={"app_id": app_id(), "code": code, "verifier": verifier},
+        once=True,
+        ua=request.headers.get("user-agent", ""),
+        ip=client_ip(request),
+    )
+    token = data.get("session_token") if isinstance(data, dict) else None
+    if not isinstance(token, str) or not is_uuid(token):
+        raise StackureError("network", "invalid exchange response")
+    return token
 
 
 def fetch_directory_users(
