@@ -149,8 +149,7 @@ def _check(request: Any, dev: dict[str, str] | None = None) -> VerifyResult:
         normalised = to_request(request)
         session = validate_token(session_token(normalised), normalised, dev)
     except Exception as exc:
-        _logger.error("stackure: verification error: %s", exc)
-        return VerifyResult(error=VerifyError(500, "Authentication verification failed"))
+        return VerifyResult(error=_verify_failed(exc))
 
     user = session.user
     if not session.authenticated or user is None:
@@ -159,6 +158,11 @@ def _check(request: Any, dev: dict[str, str] | None = None) -> VerifyResult:
         )
 
     return VerifyResult(authenticated=True, user=user)
+
+
+def _verify_failed(exc: Exception) -> VerifyError:
+    _logger.error("stackure: verification error: %s", exc)
+    return VerifyError(500, "Authentication verification failed")
 
 
 def directory_users(
@@ -284,13 +288,6 @@ def _form(raw: bytes) -> dict[str, str]:
     return {key: values[0] for key, values in parsed.items()}
 
 
-def _adoptable(token: str, request: Request) -> bool:
-    try:
-        return validate_token(token, request).authenticated
-    except Exception:
-        return False
-
-
 def _error_body(error: VerifyError) -> bytes:
     label = "Unauthorized" if error.code == 401 else "Error"
     return json.dumps(
@@ -301,6 +298,16 @@ def _error_body(error: VerifyError) -> bytes:
 def _accepts_html(request: Request) -> bool:
     accept = request.headers.get("accept", "")
     return "text/html" in accept and "application/json" not in accept
+
+
+def _failure_page(message: str) -> str:
+    return f"{base_url()}/sign-in/magic-link?state=error&message={message}"
+
+
+def _refuse(request: Request, error: VerifyError) -> _Reply:
+    if error.code == 500 and _accepts_html(request):
+        return 303, [("Location", _failure_page("appUnavailable"))], b""
+    return error.code, [("Content-Type", "application/json")], _error_body(error)
 
 
 class _Chain(io.RawIOBase):
@@ -369,7 +376,13 @@ async def _handoff_asgi(
 
 def _adopt(request: Request, form: dict[str, str]) -> _Reply | None:
     token = form.get(TOKEN_PARAM, "") if _wants_form(request, (origin(),)) else ""
-    if not token or not _adoptable(token, request):
+    if not token:
+        return None
+    try:
+        adopted = validate_token(token, request).authenticated
+    except Exception as exc:
+        return _refuse(request, _verify_failed(exc))
+    if not adopted:
         return None
     session = _cookie_header(APP_COOKIE, token, _is_https(request), _SESSION_MAX_AGE)
     return 303, [("Location", _self_url(request)), session], b""
@@ -403,6 +416,8 @@ def _redeem(request: Request) -> _Reply | None:
         token = exchange_code(code, cookie(request, VERIFIER_COOKIE), request)
     except Exception as exc:
         _logger.error("stackure: localhost sign-in failed: %s", exc)
+        if _accepts_html(request):
+            return 303, [("Location", _failure_page("localhostFailed")), *clear], b""
         return (
             401,
             [*clear, ("Content-Type", "application/json")],
@@ -433,7 +448,7 @@ def _auth_verify(request: Request, form: dict[str, str]) -> User | None | _Reply
                     _cookie_header(VERIFIER_COOKIE, verifier, secure, _VERIFIER_MAX_AGE)
                 )
             return 302, headers, b""
-        return error.code, [("Content-Type", "application/json")], _error_body(error)
+        return _refuse(request, error)
 
     return result.user
 
@@ -484,7 +499,8 @@ def auth() -> Callable[[Any], Any]:
     Completes Stackure's sign-in handoff by validating the POSTed
     ``session_token`` and storing it as a cookie on your domain. On success the user is attached to the request (read it back with
     :func:`user_from_request`). Browser requests get redirected to sign-in on
-    401; API requests get JSON.
+    401, and to a Stackure page that says sign-in couldn't be confirmed when
+    the check fails; API requests get JSON.
 
     On localhost or 127.0.0.1 with the app's development secret, sign-in
     returns to the page that asked for it: Stackure posts a one-time code
