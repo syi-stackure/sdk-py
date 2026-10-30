@@ -9,7 +9,7 @@ description = "Stackure for Python: passwordless auth for B2B apps as ASGI and W
 readme = "README.md"
 requires-python = ">=3.14"
 license = { file = "LICENSE" }
-authors = [{ name = "Stackure", email = "support@stackure.com" }]
+authors = [{ name = "Stackure", email = "contact@mappstack.com" }]
 keywords = ["stackure", "authentication", "auth", "passwordless", "magic-link", "b2b", "rbac", "mcp", "middleware", "asgi", "wsgi"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
