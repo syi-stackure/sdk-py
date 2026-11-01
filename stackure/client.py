@@ -14,7 +14,6 @@ from .errors import StackureError
 from .types import DirectoryPage, DirectoryUser, MagicLinkResponse, Request, Session, Team, User
 from .validation import is_uuid, validate_email, validate_uuid
 
-_DEFAULT_BASE_URL = "https://stackure.com"
 _REQUEST_TIMEOUT_S = 2.0
 _MAX_RETRIES = 1
 _RETRY_DELAY_S = 0.5
@@ -33,9 +32,8 @@ def origin() -> str:
 
 
 def base_url() -> str:
-    """Resolve ``STACKURE_BASE_URL`` from the environment, else production."""
-    env = os.environ.get("STACKURE_BASE_URL")
-    return env.rstrip("/") if env else _DEFAULT_BASE_URL
+    """Resolve ``STACKURE_BASE_URL`` from the environment. Required."""
+    return os.environ.get("STACKURE_BASE_URL", "").rstrip("/")
 
 
 def app_secret() -> str:
@@ -134,6 +132,8 @@ def _request(
     parse: bool = True,
     got: dict[str, str] | None = None,
 ) -> Any:
+    if not base_url():
+        raise StackureError("validation", "STACKURE_BASE_URL is not set")
     base = urllib.parse.urlsplit(base_url())
     target = base.path + path
     if query:
