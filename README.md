@@ -23,6 +23,9 @@ import stackure
 
 app = stackure.auth()(app)
 
+# or only /admin and everything under it
+app = stackure.auth("/admin")(app)
+
 # in a view
 user = stackure.user_from_request(request)
 ```
