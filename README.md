@@ -4,7 +4,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/stackure.svg)](https://pypi.org/project/stackure/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-[Stackure](https://stackure.com) is passwordless auth for B2B apps. This SDK adds it to an ASGI or WSGI app, such as FastAPI, Flask or Django, with zero dependencies.
+[Stackure](https://stackure.com) is sign-in and app access for your people and your partners. This SDK adds it to an ASGI or WSGI app, such as FastAPI, Flask or Django, with zero dependencies.
 
 ## Install
 

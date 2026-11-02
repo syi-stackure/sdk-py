@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "stackure"
 version = "0.0.0"
-description = "Stackure for Python: passwordless auth for B2B apps as ASGI and WSGI middleware. Zero dependencies."
+description = "Stackure for Python: sign-in and app access for your people and your partners, as ASGI and WSGI middleware. Zero dependencies."
 readme = "README.md"
 requires-python = ">=3.14"
 license = { file = "LICENSE" }
