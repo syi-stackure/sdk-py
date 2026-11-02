@@ -1,7 +1,7 @@
 """Stackure is the Python SDK for the Stackure authentication API.
 
-Stackure provides passwordless B2B authentication. This SDK wraps the public
-API behind 8 free functions and 2 middlewares.
+Stackure provides sign-in and app access for your people and your partners.
+This SDK wraps the public API behind 8 free functions and 2 middlewares.
 
 Quickstart
 ----------
