@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import logging
+import posixpath
 import re
 import secrets
 import urllib.parse
@@ -493,7 +494,30 @@ def _is_asgi(app: Any) -> bool:
     )
 
 
-def auth() -> Callable[[Any], Any]:
+def _normal_path(path: str) -> str:
+    path = posixpath.normpath(re.sub(r"/+", "/", path))
+    return "/" if path == "." else path
+
+
+def _prefixes(paths: tuple[str, ...]) -> tuple[str, ...]:
+    for path in paths:
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise ValueError(f"stackure: auth paths must start with '/': {path!r}")
+    return tuple(_normal_path(path).rstrip("/").casefold() for path in paths)
+
+
+def _covers(prefixes: tuple[str, ...], path: str) -> bool:
+    if not prefixes:
+        return True
+    seen = {path.casefold(), _normal_path(path).casefold()}
+    return any(
+        prefix == "" or candidate == prefix or candidate.startswith(prefix + "/")
+        for prefix in prefixes
+        for candidate in seen
+    )
+
+
+def auth(*paths: str) -> Callable[[Any], Any]:
     """Middleware that enforces authentication, for ASGI or WSGI apps.
 
     Completes Stackure's sign-in handoff by validating the POSTed
@@ -501,6 +525,12 @@ def auth() -> Callable[[Any], Any]:
     :func:`user_from_request`). Browser requests get redirected to sign-in on
     401, and to a Stackure page that says sign-in couldn't be confirmed when
     the check fails; API requests get JSON.
+
+    With no paths, every request is checked. Pass paths to check only those
+    routes and everything under them, such as ``auth("/admin")``; other
+    requests reach your app unchecked, with no user attached. Matching ignores
+    case, repeated slashes and dot segments. Include the path of the app's
+    registered URL, since that's where Stackure posts the sign-in handoff.
 
     On localhost or 127.0.0.1 with the app's development secret, sign-in
     returns to the page that asked for it: Stackure posts a one-time code
@@ -511,16 +541,21 @@ def auth() -> Callable[[Any], Any]:
     The app you wrap decides the protocol: an awaitable callable yields ASGI
     middleware, anything else yields WSGI middleware.
 
+    Raises:
+        ValueError: A path that doesn't start with ``/``.
+
     Example:
         >>> app = auth()(app)  # ASGI
+        >>> app = auth("/admin")(app)  # only /admin and below
         >>> flask_app.wsgi_app = auth()(flask_app.wsgi_app)
     """
+    prefixes = _prefixes(paths)
 
     def factory(app: Any) -> Any:
         if _is_asgi(app):
 
             async def asgi(scope: dict[str, Any], receive: Any, send: Any) -> Any:
-                if scope.get("type") != "http":
+                if scope.get("type") != "http" or not _covers(prefixes, scope.get("path") or "/"):
                     return await app(scope, receive, send)
 
                 request = _from_asgi(scope)
@@ -536,6 +571,9 @@ def auth() -> Callable[[Any], Any]:
 
         def wsgi(environ: dict[str, Any], start_response: Any) -> Any:
             request = _from_wsgi(environ)
+            if not _covers(prefixes, request.path):
+                return app(environ, start_response)
+
             result = _auth_verify(request, _handoff_wsgi(environ, request))
             if isinstance(result, tuple):
                 return _send_wsgi(start_response, *result)

@@ -14,6 +14,10 @@ Or a WSGI one::
 
     flask_app.wsgi_app = stackure.auth()(flask_app.wsgi_app)
 
+Or only some routes, here ``/admin`` and everything under it::
+
+    app = stackure.auth("/admin")(app)
+
 Access the authenticated user inside a view::
 
     user = stackure.user_from_request(request)
