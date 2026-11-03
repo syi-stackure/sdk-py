@@ -9,7 +9,7 @@ description = "Stackure for Python: sign-in and app access for your people and y
 readme = "README.md"
 requires-python = ">=3.14"
 license = { file = "LICENSE" }
-authors = [{ name = "Stackure", email = "contact@mappstack.com" }]
+authors = [{ name = "Stackure" }]
 keywords = ["stackure", "authentication", "auth", "passwordless", "magic-link", "b2b", "rbac", "mcp", "middleware", "asgi", "wsgi"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
