@@ -1,7 +1,7 @@
 """Stackure is the Python SDK for the Stackure authentication API.
 
 Stackure provides sign-in and app access for your people and your partners.
-This SDK wraps the public API behind 8 free functions and 2 middlewares.
+This SDK wraps the public API behind 9 free functions and 2 middlewares.
 
 Quickstart
 ----------
@@ -119,6 +119,44 @@ Both are authenticated by the request's session cookie, so call them from a
 route behind :func:`auth`; MCP bearer tokens are not accepted. No valid session
 raises ``"auth"``.
 
+Closed organizations
+--------------------
+
+When an organization closes in Stackure, every app it used that another
+organization added is asked to delete what it stores for it and for the
+organizations under it. Register one function to do that::
+
+    @stackure.on_org_closed
+    def delete_org(account_id):
+        db.delete_org(account_id)
+
+``account_id`` is the closed organization's ID, the same value as
+``User.account_id``. There is no scheduled job, endpoint or setting to add.
+The SDK checks once when :func:`on_org_closed` is called, and Stackure reports
+new closures on the session checks the SDK already makes. The SDK then runs
+the function in a background thread, once for each closed organization, and
+tells Stackure each one is done when the function returns.
+
+It can also be an ``async`` function. It then runs on the app's event loop,
+the one serving requests through :func:`auth` or :func:`mcp`, so it can use
+what the app set up at startup, such as a database pool. Before the first such
+request, the SDK uses the loop :func:`on_org_closed` was called from, such as
+the app's lifespan. Registered with no running loop, such as at import, it
+waits for the first session check. With no loop serving requests, as in a WSGI
+app, the SDK runs it in that thread with :func:`asyncio.run`.
+
+The same organization can arrive again, for example when the app stops
+between deleting and telling Stackure, so the function must also succeed when
+there is nothing left to delete. When it raises, or the app's event loop stops
+before it finishes, the SDK logs it and tries that organization again on a
+later check, at least 5 minutes later. Stackure keeps each one waiting for
+1 year.
+
+Until :func:`on_org_closed` is registered, the SDK logs once that closed
+organizations are waiting, and the app's page in Stackure shows how many.
+Only the app secret receives closed organizations; the development secret
+never does.
+
 Configuration
 -------------
 
@@ -146,10 +184,10 @@ because each code works only once.
 Errors
 ------
 
-Every function except :func:`verify` and :func:`logout` raises
-:class:`StackureError`; those two never raise. Inspect ``code`` to branch on
-category: ``"validation"``, ``"auth"``, ``"forbidden"``, ``"timeout"``,
-``"network"``.
+Every function except :func:`verify`, :func:`logout` and
+:func:`on_org_closed` raises :class:`StackureError`; those three never raise.
+Inspect ``code`` to branch on category: ``"validation"``, ``"auth"``,
+``"forbidden"``, ``"timeout"``, ``"network"``.
 
 Releases
 --------
@@ -161,6 +199,7 @@ OIDC trusted publishing.
 
 from .client import send_magic_link, validate_session
 from .errors import StackureError, StackureErrorCode
+from .events import on_org_closed
 from .middleware import (
     auth,
     directory_teams,
@@ -194,6 +233,7 @@ __all__ = [
     "validate_session",
     "directory_users",
     "directory_teams",
+    "on_org_closed",
     "to_request",
     "Request",
     "User",

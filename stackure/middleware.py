@@ -33,6 +33,7 @@ from .client import (
     validate_token,
     origin,
 )
+from .events import note_loop
 from .types import (
     DirectoryPage,
     DirectoryUser,
@@ -560,6 +561,7 @@ def auth(*paths: str) -> Callable[[Any], Any]:
 
                 request = _from_asgi(scope)
                 form, receive = await _handoff_asgi(receive, request)
+                note_loop()
                 result = await asyncio.to_thread(_auth_verify, request, form)
                 if isinstance(result, tuple):
                     return await _send_asgi(send, *result)
@@ -641,6 +643,7 @@ def mcp() -> Callable[[Any], Any]:
                 if scope.get("type") != "http":
                     return await app(scope, receive, send)
 
+                note_loop()
                 result = await asyncio.to_thread(_mcp_verify, _from_asgi(scope))
                 if not isinstance(result, User):
                     return await _send_asgi(send, *result)

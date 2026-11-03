@@ -10,6 +10,7 @@ import urllib.parse
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from . import events
 from .errors import StackureError
 from .types import DirectoryPage, DirectoryUser, MagicLinkResponse, Request, Session, Team, User
 from .validation import is_uuid, validate_email, validate_uuid
@@ -303,6 +304,7 @@ def validate_token(token: str, request: Request, dev: dict[str, str] | None = No
         token if is_uuid(token) else "",
         request,
     )
+    events.note_events(data.get("events_waiting"))
     return Session(
         authenticated=bool(data.get("authenticated")),
         user=_user(data.get("user")),
@@ -430,6 +432,7 @@ def validate_mcp(url: str, token: str, request: Request) -> tuple[User | None, s
         ua=request.headers.get("user-agent", ""),
         ip=client_ip(request),
     )
+    events.note_events(data.get("events_waiting"))
     user = _user(data.get("user")) if data.get("authenticated") else None
     return user, data.get("www_authenticate") or "Bearer"
 
