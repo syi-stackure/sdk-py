@@ -35,6 +35,10 @@ user = stackure.user_from_request(request)
 - Guide and reference: [stackure.com/docs/python](https://stackure.com/docs/python)
 - For AI agents: [stackure.com/llms.txt](https://stackure.com/llms.txt)
 
+## Model
+
+Modeled in Mappstack as the Stackure project. Every change starts in the model, then the code follows it.
+
 ## License
 
 MIT
