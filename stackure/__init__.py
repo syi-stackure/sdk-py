@@ -197,7 +197,7 @@ one carries a GitHub build-provenance attestation and publishes to PyPI via
 OIDC trusted publishing.
 """
 
-from .client import send_magic_link, validate_session
+from .client import send_magic_link
 from .errors import StackureError, StackureErrorCode
 from .events import on_org_closed
 from .middleware import (
@@ -208,6 +208,7 @@ from .middleware import (
     mcp,
     to_request,
     user_from_request,
+    validate_session,
     verify,
 )
 from .types import (

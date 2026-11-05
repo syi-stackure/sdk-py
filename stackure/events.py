@@ -70,9 +70,9 @@ def note_loop() -> None:
         _loop = asyncio.get_running_loop()
 
 
-def note_events(waiting: Any) -> None:
+def note_events(waiting: int) -> None:
     """Act on the ``events_waiting`` count from a session check. Never raises."""
-    if not isinstance(waiting, int) or waiting <= 0:
+    if waiting <= 0:
         return
     if _org_closed is None:
         if _warned.acquire(blocking=False):

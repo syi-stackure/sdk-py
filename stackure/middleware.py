@@ -33,12 +33,13 @@ from .client import (
     validate_token,
     origin,
 )
-from .events import note_loop
+from .events import note_events, note_loop
 from .types import (
     DirectoryPage,
     DirectoryUser,
     Redirect,
     Request,
+    Session,
     Team,
     User,
     VerifyError,
@@ -149,7 +150,7 @@ def verify(request: Any) -> VerifyResult:
 def _check(request: Any, dev: dict[str, str] | None = None) -> VerifyResult:
     try:
         normalised = to_request(request)
-        session = validate_token(session_token(normalised), normalised, dev)
+        session = _validate(session_token(normalised), normalised, dev)
     except Exception as exc:
         return VerifyResult(error=_verify_failed(exc))
 
@@ -160,6 +161,26 @@ def _check(request: Any, dev: dict[str, str] | None = None) -> VerifyResult:
         )
 
     return VerifyResult(authenticated=True, user=user)
+
+
+def validate_session(request: Request) -> Session:
+    """Validate ``request``'s session against Stackure.
+
+    A request without a well-formed session token gets the sign-in URL
+    without a Stackure call.
+
+    Most callers want :func:`~stackure.verify` or :func:`~stackure.auth`.
+
+    Raises:
+        StackureError: On invalid input, or any transport or API failure.
+    """
+    return _validate(session_token(request), request)
+
+
+def _validate(token: str, request: Request, dev: dict[str, str] | None = None) -> Session:
+    session, waiting = validate_token(token, request, dev)
+    note_events(waiting)
+    return session
 
 
 def _verify_failed(exc: Exception) -> VerifyError:
@@ -381,7 +402,7 @@ def _adopt(request: Request, form: dict[str, str]) -> _Reply | None:
     if not token:
         return None
     try:
-        adopted = validate_token(token, request).authenticated
+        adopted = _validate(token, request).authenticated
     except Exception as exc:
         return _refuse(request, _verify_failed(exc))
     if not adopted:
@@ -602,12 +623,13 @@ def _bearer(request: Request) -> str:
 def _mcp_verify(request: Request) -> User | tuple[int, list[tuple[str, str]], bytes]:
     json_type = ("Content-Type", "application/json")
     try:
-        user, challenge = validate_mcp(_mcp_url(request), _bearer(request), request)
+        user, challenge, waiting = validate_mcp(_mcp_url(request), _bearer(request), request)
     except Exception as exc:
         _logger.error(
             "stackure: mcp verification failed: %s", getattr(exc, "code", type(exc).__name__)
         )
         return 503, [json_type], b'{"error":"unavailable"}'
+    note_events(waiting)
 
     if user is None:
         return 401, [("WWW-Authenticate", challenge), json_type], b'{"error":"unauthorized"}'

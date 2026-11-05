@@ -10,7 +10,6 @@ import urllib.parse
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from . import events
 from .errors import StackureError
 from .types import DirectoryPage, DirectoryUser, MagicLinkResponse, Request, Session, Team, User
 from .validation import is_uuid, validate_email, validate_uuid
@@ -269,34 +268,25 @@ def send_magic_link(email: str) -> MagicLinkResponse:
         raise StackureError("network", "unexpected API response format") from exc
 
 
-def validate_session(request: Request) -> Session:
-    """Validate ``request``'s session against Stackure.
-
-    A request without a well-formed session token gets the sign-in URL
-    without a Stackure call.
-
-    Most callers want :func:`~stackure.verify` or :func:`~stackure.auth`.
-
-    Raises:
-        StackureError: On invalid input, or any transport or API failure.
-    """
-    return validate_token(session_token(request), request)
-
-
-def validate_token(token: str, request: Request, dev: dict[str, str] | None = None) -> Session:
+def validate_token(
+    token: str, request: Request, dev: dict[str, str] | None = None
+) -> tuple[Session, int]:
     """Validate an explicit session ``token`` for ``request``'s browser.
 
     ``dev`` holds the ``return`` and ``challenge`` query values of a localhost
     sign-in. With it the call is made even without a well-formed token, so
     Stackure can build that sign-in URL.
+
+    Returns the session and the ``events_waiting`` count.
     """
     app = app_id()
 
     if not is_uuid(token) and not dev:
-        return Session(
+        session = Session(
             authenticated=False,
             sign_in_url=f"{base_url()}/sign-in/magic-link?app_id={app}",
         )
+        return session, 0
 
     data = _get_with_session(
         "/api/public/auth/session/validate",
@@ -304,12 +294,17 @@ def validate_token(token: str, request: Request, dev: dict[str, str] | None = No
         token if is_uuid(token) else "",
         request,
     )
-    events.note_events(data.get("events_waiting"))
-    return Session(
+    session = Session(
         authenticated=bool(data.get("authenticated")),
         user=_user(data.get("user")),
         sign_in_url=data.get("sign_in_url") or "",
     )
+    return session, _events_waiting(data)
+
+
+def _events_waiting(data: Any) -> int:
+    waiting = data.get("events_waiting")
+    return waiting if isinstance(waiting, int) else 0
 
 
 def exchange_code(code: str, verifier: str, request: Request) -> str:
@@ -414,12 +409,13 @@ def _get_with_session(
     )
 
 
-def validate_mcp(url: str, token: str, request: Request) -> tuple[User | None, str]:
+def validate_mcp(url: str, token: str, request: Request) -> tuple[User | None, str, int]:
     """Validate an MCP bearer ``token`` for the MCP endpoint at ``url``.
 
     Returns the user when authenticated, else ``None``, with the
-    ``WWW-Authenticate`` value to answer with. A token that is not well formed
-    is never sent; the call is still made, without it.
+    ``WWW-Authenticate`` value to answer with and the ``events_waiting``
+    count. A token that is not well formed is never sent; the call is still
+    made, without it.
 
     Raises:
         StackureError: On invalid input, or any transport or API failure.
@@ -432,9 +428,8 @@ def validate_mcp(url: str, token: str, request: Request) -> tuple[User | None, s
         ua=request.headers.get("user-agent", ""),
         ip=client_ip(request),
     )
-    events.note_events(data.get("events_waiting"))
     user = _user(data.get("user")) if data.get("authenticated") else None
-    return user, data.get("www_authenticate") or "Bearer"
+    return user, data.get("www_authenticate") or "Bearer", _events_waiting(data)
 
 
 def sign_out(token: str, request: Request) -> None:
