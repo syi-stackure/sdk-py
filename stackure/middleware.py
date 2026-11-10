@@ -163,7 +163,7 @@ def _check(request: Any, dev: dict[str, str] | None = None) -> VerifyResult:
     return VerifyResult(authenticated=True, user=user)
 
 
-def validate_session(request: Request) -> Session:
+def validate_session(request: Any) -> Session:
     """Validate ``request``'s session against Stackure.
 
     A request without a well-formed session token gets the sign-in URL
@@ -171,10 +171,14 @@ def validate_session(request: Request) -> Session:
 
     Most callers want :func:`~stackure.verify` or :func:`~stackure.auth`.
 
+    Args:
+        request: A WSGI ``environ``, ASGI ``scope`` or framework request.
+
     Raises:
         StackureError: On invalid input, or any transport or API failure.
     """
-    return _validate(session_token(request), request)
+    normalised = to_request(request)
+    return _validate(session_token(normalised), normalised)
 
 
 def _validate(token: str, request: Request, dev: dict[str, str] | None = None) -> Session:

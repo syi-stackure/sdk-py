@@ -374,7 +374,7 @@ def _fetch_directory[T](
         q.append(("q", query))
     if cursor:
         q.append(("cursor", cursor))
-    if limit is not None:
+    if limit:
         q.append(("limit", str(limit)))
     q += [("id", i) for i in ids]
 
