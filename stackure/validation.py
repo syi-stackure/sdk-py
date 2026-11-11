@@ -19,6 +19,11 @@ def validate_email(email: str) -> None:
         raise StackureError("validation", "invalid email format")
 
 
+def is_loopback_host(host: str) -> bool:
+    """Whether ``host``, with or without a port, is ``localhost`` or ``127.0.0.1``."""
+    return re.sub(r":[0-9]+$", "", host.lower()) in ("localhost", "127.0.0.1")
+
+
 def is_uuid(value: str) -> bool:
     """Whether ``value`` is a UUID v4."""
     return bool(_UUID_RE.fullmatch(value))

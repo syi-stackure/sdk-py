@@ -64,10 +64,11 @@ tokens are ignored, and handoff bodies over 4 KB are ignored.
 Session binding
 ---------------
 
-Sessions are not bound to the browser's user agent or IP address. The SDK
-still forwards the original ``User-Agent`` and ``X-Forwarded-For`` on every
-validation call, but they are informational only; validation does not depend
-on them.
+Sessions are not bound to the browser's user agent or IP address. On every
+call it makes for a request, the SDK still forwards the browser's
+``User-Agent`` and sends its IP address in ``Stackure-Client-IP``: the first
+``X-Forwarded-For`` entry, else the connection's address. They are
+informational only; validation does not depend on them.
 
 Every request with a session token is validated against Stackure, so revoking
 a session takes effect immediately. Requests without a well-formed token get
@@ -160,26 +161,32 @@ never does.
 Configuration
 -------------
 
+The SDK reads ``STACKURE_APP_ID``, ``STACKURE_APP_SECRET`` and
+``STACKURE_BASE_URL`` once, on its first call, and keeps them until the process
+exits. Restart the app after changing them.
+
 ``STACKURE_APP_ID`` must be set to the app's UUID, shown on the app page in
 Stackure, and ``STACKURE_APP_SECRET`` to the app secret shown when the app was
 registered (or last rotated). The secret is sent as the ``X-App-Secret`` header
-on every call except sign-out; the first call that needs either raises a
-``"validation"`` :class:`StackureError` when it is missing or, for the app ID,
-not a UUID.
+on every call; every call that needs either raises a ``"validation"``
+:class:`StackureError` when it is missing or, for the app ID, not a UUID.
+Sign-out needs neither: it sends the secret only when it is set.
 ``STACKURE_BASE_URL`` must be set to your region's address,
 ``https://eu.stackure.com`` or ``https://us.stackure.com``. Every call goes
-there, and the first call raises a ``"validation"`` :class:`StackureError` when
-it is unset.
+there, and every call raises a ``"validation"`` :class:`StackureError` when it
+is unset, isn't an ``https`` URL or has a query or fragment. ``http`` is
+accepted only on ``localhost`` or ``127.0.0.1``. A trailing ``/`` is dropped.
 
 People can open a newly registered app once an app admin gives it to everyone
 in the organization or to one of their teams in Stackure. App admins and the
 owner can always open it, so they can test sign-in first.
 
-Every call has one 2-second deadline covering connect, headers, body and the
-single retry. Calls retry once after 500 ms on a 5xx or a connection failure,
-never on a timeout. A timeout anywhere, including while reading the body,
-surfaces as ``"timeout"``. The localhost sign-in code swap is never retried,
-because each code works only once.
+Every call has one 2-second deadline covering connect, headers, body and any
+retry. Only reads are retried: a session check or directory call is tried once
+more after 500 ms on a 5xx or a connection failure, never on a timeout. Calls
+that change something are never retried: sending a magic link, the localhost
+sign-in code swap, sign-out and the closed organizations check. A timeout
+anywhere, including while reading the body, surfaces as ``"timeout"``.
 
 Errors
 ------

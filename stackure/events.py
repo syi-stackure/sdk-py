@@ -12,11 +12,10 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 
 from . import client
+from .config import EVENTS_PATH, LOOP_CHECK_S, MAX_EVENTS, app_id
 from .errors import StackureError
 
 _logger = logging.getLogger(__name__)
-_MAX_EVENTS = 100
-_LOOP_CHECK_S = 1.0
 
 type _OrgClosed = Callable[[str], object]
 
@@ -116,7 +115,7 @@ def _log_failure(exc: Exception) -> None:
 def _process_events(fn: _OrgClosed) -> None:
     ack: list[str] = []
     while True:
-        events, more = _take_events(ack, _MAX_EVENTS)
+        events, more = _take_events(ack, MAX_EVENTS)
         ack = []
         err: Exception | None = None
         for event_id, kind, account_id in events:
@@ -157,7 +156,7 @@ def _await(coro: Coroutine[Any, Any, object]) -> None:
         return
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     while loop.is_running() and not future.done():
-        concurrent.futures.wait([future], _LOOP_CHECK_S)
+        concurrent.futures.wait([future], LOOP_CHECK_S)
     if future.cancelled():
         raise RuntimeError("cancelled on the app's event loop")
     if not future.done():
@@ -176,8 +175,8 @@ def _take_events(ack: list[str], max_events: int) -> tuple[list[tuple[str, str, 
     """
     data = client._request(
         "POST",
-        "/api/public/events",
-        body={"app_id": client.app_id(), "ack": ack or None, "max_events": max_events},
+        EVENTS_PATH,
+        body={"app_id": app_id(), "ack": ack or None, "max_events": max_events},
     )
     try:
         events = [

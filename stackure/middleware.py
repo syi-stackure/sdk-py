@@ -17,12 +17,6 @@ from inspect import iscoroutinefunction
 from typing import Any
 
 from .client import (
-    APP_COOKIE,
-    CODE_COOKIE,
-    CODE_PARAM,
-    TOKEN_PARAM,
-    VERIFIER_COOKIE,
-    base_url,
     cookie,
     exchange_code,
     fetch_directory_teams,
@@ -31,6 +25,23 @@ from .client import (
     sign_out,
     validate_mcp,
     validate_token,
+)
+from .config import (
+    CODE_COOKIE,
+    CODE_MAX_AGE,
+    CODE_PARAM,
+    HOME_PAGE,
+    MAX_HANDOFF_BODY,
+    SESSION_COOKIE,
+    SESSION_MAX_AGE,
+    SIGN_IN_PAGE,
+    SIGN_OUT_PAGE,
+    TOKEN_PARAM,
+    USER_KEY,
+    VERIFIER_BYTES,
+    VERIFIER_COOKIE,
+    VERIFIER_MAX_AGE,
+    base_url,
     origin,
 )
 from .events import note_events, note_loop
@@ -45,13 +56,9 @@ from .types import (
     VerifyError,
     VerifyResult,
 )
+from .validation import is_loopback_host
 
 _logger = logging.getLogger(__name__)
-_USER_KEY = "stackure.user"
-_MAX_HANDOFF_BODY = 4096
-_SESSION_MAX_AGE = 604800
-_CODE_MAX_AGE = 60
-_VERIFIER_MAX_AGE = 900
 _CODE_RE = re.compile(r"^[0-9a-f]{64}$")
 
 type _Reply = tuple[int, list[tuple[str, str]], bytes]
@@ -126,8 +133,7 @@ def _is_https(request: Request) -> bool:
 
 
 def _is_loopback(request: Request) -> bool:
-    host = re.sub(r":[0-9]+$", "", request.headers.get("host", "").lower())
-    return host in ("localhost", "127.0.0.1")
+    return is_loopback_host(request.headers.get("host", ""))
 
 
 def verify(request: Any) -> VerifyResult:
@@ -260,7 +266,7 @@ def user_from_request(source: Any) -> User | None:
             if isinstance(found, dict):
                 source = found
                 break
-    return source.get(_USER_KEY) if isinstance(source, dict) else None
+    return source.get(USER_KEY) if isinstance(source, dict) else None
 
 
 def _cookie_header(
@@ -328,7 +334,7 @@ def _accepts_html(request: Request) -> bool:
 
 
 def _failure_page(message: str) -> str:
-    return f"{base_url()}/sign-in/magic-link?state=error&message={message}"
+    return f"{base_url()}{SIGN_IN_PAGE}?state=error&message={message}"
 
 
 def _refuse(request: Request, error: VerifyError) -> _Reply:
@@ -358,8 +364,8 @@ def _handoff_wsgi(environ: dict[str, Any], request: Request) -> dict[str, str]:
         return {}
     stream = environ["wsgi.input"]
     if environ.get("CONTENT_LENGTH") is None:
-        raw = stream.read(_MAX_HANDOFF_BODY + 1)
-        if len(raw) > _MAX_HANDOFF_BODY:
+        raw = stream.read(MAX_HANDOFF_BODY + 1)
+        if len(raw) > MAX_HANDOFF_BODY:
             environ["wsgi.input"] = io.BufferedReader(_Chain(raw, stream))
             return {}
         environ["wsgi.input"] = io.BytesIO(raw)
@@ -368,7 +374,7 @@ def _handoff_wsgi(environ: dict[str, Any], request: Request) -> dict[str, str]:
         length = int(environ["CONTENT_LENGTH"] or 0)
     except ValueError:
         return {}
-    if length > _MAX_HANDOFF_BODY:
+    if length > MAX_HANDOFF_BODY:
         return {}
     raw = stream.read(length) if length > 0 else b""
     environ["wsgi.input"] = io.BytesIO(raw)
@@ -390,7 +396,7 @@ async def _handoff_asgi(
         if message["type"] != "http.request":
             break
         size += len(message.get("body", b""))
-        over = size > _MAX_HANDOFF_BODY
+        over = size > MAX_HANDOFF_BODY
         if over or not message.get("more_body"):
             break
     raw = b"".join(m.get("body", b"") for m in seen if m["type"] == "http.request")
@@ -411,7 +417,7 @@ def _adopt(request: Request, form: dict[str, str]) -> _Reply | None:
         return _refuse(request, _verify_failed(exc))
     if not adopted:
         return None
-    session = _cookie_header(APP_COOKIE, token, _is_https(request), _SESSION_MAX_AGE)
+    session = _cookie_header(SESSION_COOKIE, token, _is_https(request), SESSION_MAX_AGE)
     return 303, [("Location", _self_url(request)), session], b""
 
 
@@ -428,7 +434,7 @@ def _stash(request: Request, form: dict[str, str]) -> _Reply | None:
     code = form.get(CODE_PARAM, "") if _wants_form(request, ("null", origin())) else ""
     if not _CODE_RE.fullmatch(code):
         return None
-    stash = _cookie_header(CODE_COOKIE, code, _is_https(request), _CODE_MAX_AGE)
+    stash = _cookie_header(CODE_COOKIE, code, _is_https(request), CODE_MAX_AGE)
     return 303, [("Location", _self_url(request)), stash], b""
 
 
@@ -451,7 +457,7 @@ def _redeem(request: Request) -> _Reply | None:
             b'{"error":"localhost sign-in failed, reload to try again"}',
         )
 
-    session = _cookie_header(APP_COOKIE, token, secure, _SESSION_MAX_AGE)
+    session = _cookie_header(SESSION_COOKIE, token, secure, SESSION_MAX_AGE)
     return 303, [("Location", _self_url(request)), *clear, session], b""
 
 
@@ -463,7 +469,7 @@ def _auth_verify(request: Request, form: dict[str, str]) -> User | None | _Reply
     if reply:
         return reply
 
-    verifier = secrets.token_urlsafe(32) if local else ""
+    verifier = secrets.token_urlsafe(VERIFIER_BYTES) if local else ""
     result = _check(request, _dev_sign_in(request, verifier) if local else None)
     error = result.error
     if not result.authenticated and error:
@@ -472,7 +478,7 @@ def _auth_verify(request: Request, form: dict[str, str]) -> User | None | _Reply
             if local:
                 secure = _is_https(request)
                 headers.append(
-                    _cookie_header(VERIFIER_COOKIE, verifier, secure, _VERIFIER_MAX_AGE)
+                    _cookie_header(VERIFIER_COOKIE, verifier, secure, VERIFIER_MAX_AGE)
                 )
             return 302, headers, b""
         return _refuse(request, error)
@@ -547,7 +553,8 @@ def auth(*paths: str) -> Callable[[Any], Any]:
     """Middleware that enforces authentication, for ASGI or WSGI apps.
 
     Completes Stackure's sign-in handoff by validating the POSTed
-    ``session_token`` and storing it as a cookie on your domain. On success the user is attached to the request (read it back with
+    ``session_token`` and storing it as a ``stackure_session`` cookie on your
+    domain. On success the user is attached to the request (read it back with
     :func:`user_from_request`). Browser requests get redirected to sign-in on
     401, and to a Stackure page that says sign-in couldn't be confirmed when
     the check fails; API requests get JSON.
@@ -591,7 +598,7 @@ def auth(*paths: str) -> Callable[[Any], Any]:
                 if isinstance(result, tuple):
                     return await _send_asgi(send, *result)
 
-                scope[_USER_KEY] = result
+                scope[USER_KEY] = result
                 return await app(scope, receive, send)
 
             return asgi
@@ -605,7 +612,7 @@ def auth(*paths: str) -> Callable[[Any], Any]:
             if isinstance(result, tuple):
                 return _send_wsgi(start_response, *result)
 
-            environ[_USER_KEY] = result
+            environ[USER_KEY] = result
             return app(environ, start_response)
 
         return wsgi
@@ -674,7 +681,7 @@ def mcp() -> Callable[[Any], Any]:
                 if not isinstance(result, User):
                     return await _send_asgi(send, *result)
 
-                scope[_USER_KEY] = result
+                scope[USER_KEY] = result
                 return await app(scope, receive, send)
 
             return asgi
@@ -684,7 +691,7 @@ def mcp() -> Callable[[Any], Any]:
             if not isinstance(result, User):
                 return _send_wsgi(start_response, *result)
 
-            environ[_USER_KEY] = result
+            environ[USER_KEY] = result
             return app(environ, start_response)
 
         return wsgi
@@ -700,7 +707,8 @@ def logout(request: Any) -> Redirect:
     sent to Stackure's sign-out page, where the user confirms.
 
     A same-origin POST makes one server-side call to Stackure with the app
-    session token, clears the cookie and redirects to Stackure. If that call
+    session token, and the app secret when it's set, clears the cookie and
+    redirects to Stackure. If that call
     fails, the redirect goes to Stackure's sign-out page instead, where the
     user can finish signing out.
 
@@ -714,14 +722,14 @@ def logout(request: Any) -> Redirect:
         ...     r = logout(flask.request.environ)
         ...     return "", r.status, r.headers
     """
-    path = "/signout"
+    path = SIGN_OUT_PAGE
     clear: list[tuple[str, str]] = []
     try:
         normalised = to_request(request)
         if _same_origin_post(normalised):
-            clear = [_cookie_header(APP_COOKIE, "", _is_https(normalised), 0)]
+            clear = [_cookie_header(SESSION_COOKIE, "", _is_https(normalised), 0)]
             sign_out(session_token(normalised), normalised)
-            path = "/"
+            path = HOME_PAGE
     except Exception as exc:
         _logger.error("stackure: sign-out failed: %s", getattr(exc, "code", type(exc).__name__))
     return Redirect(303, [("Location", base_url() + path), *clear])

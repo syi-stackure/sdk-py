@@ -3,58 +3,37 @@
 import http.client
 import io
 import json
-import os
 import socket
 import time
 import urllib.parse
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from .config import (
+    DIRECTORY_TEAMS_PATH,
+    DIRECTORY_USERS_PATH,
+    EXCHANGE_PATH,
+    MAGIC_LINK_PATH,
+    MAX_RETRIES,
+    PLATFORM_COOKIE,
+    REQUEST_TIMEOUT_S,
+    RETRY_DELAY_S,
+    SESSION_COOKIE,
+    SIGN_IN_PAGE,
+    SIGN_OUT_PATH,
+    VALIDATE_PATH,
+    app_id,
+    app_secret,
+    app_secret_if_set,
+    required_base_url,
+)
 from .errors import StackureError
 from .types import DirectoryPage, DirectoryUser, MagicLinkResponse, Request, Session, Team, User
-from .validation import is_uuid, validate_email, validate_uuid
-
-_REQUEST_TIMEOUT_S = 2.0
-_MAX_RETRIES = 1
-_RETRY_DELAY_S = 0.5
-
-SESSION_COOKIE = "session"
-APP_COOKIE = "stackure_session"
-TOKEN_PARAM = "session_token"
-CODE_PARAM = "stackure_code"
-CODE_COOKIE = "stackure_code"
-VERIFIER_COOKIE = "stackure_verifier"
-
-
-def origin() -> str:
-    u = urllib.parse.urlsplit(base_url())
-    return f"{u.scheme}://{u.netloc}"
-
-
-def base_url() -> str:
-    """Resolve ``STACKURE_BASE_URL`` from the environment. Required."""
-    return os.environ.get("STACKURE_BASE_URL", "").rstrip("/")
-
-
-def app_secret() -> str:
-    """Resolve ``STACKURE_APP_SECRET`` from the environment. Required."""
-    v = os.environ.get("STACKURE_APP_SECRET")
-    if not v:
-        raise StackureError("validation", "STACKURE_APP_SECRET is not set")
-    return v
-
-
-def app_id() -> str:
-    """Resolve ``STACKURE_APP_ID`` from the environment. Required."""
-    v = os.environ.get("STACKURE_APP_ID")
-    if not v:
-        raise StackureError("validation", "STACKURE_APP_ID is not set")
-    validate_uuid(v, "STACKURE_APP_ID")
-    return v
+from .validation import is_uuid, validate_email
 
 
 def _timeout() -> StackureError:
-    return StackureError("timeout", f"request timed out after {_REQUEST_TIMEOUT_S}s")
+    return StackureError("timeout", f"request timed out after {REQUEST_TIMEOUT_S}s")
 
 
 def _left(deadline: float) -> float:
@@ -85,8 +64,8 @@ def _response(deadline: float) -> type[http.client.HTTPResponse]:
     return R
 
 
-def _can_retry(attempt: int, deadline: float, once: bool) -> bool:
-    return not once and attempt < _MAX_RETRIES and deadline - time.monotonic() > _RETRY_DELAY_S
+def _can_retry(method: str, attempt: int, deadline: float) -> bool:
+    return method == "GET" and attempt < MAX_RETRIES and deadline - time.monotonic() > RETRY_DELAY_S
 
 
 def _read(resp: Any) -> bytes:
@@ -122,7 +101,6 @@ def _request(
     path: str,
     *,
     body: Any = None,
-    once: bool = False,
     query: dict[str, str] | list[tuple[str, str]] | None = None,
     token: str = "",
     bearer: str = "",
@@ -132,15 +110,16 @@ def _request(
     parse: bool = True,
     got: dict[str, str] | None = None,
 ) -> Any:
-    if not base_url():
-        raise StackureError("validation", "STACKURE_BASE_URL is not set")
-    base = urllib.parse.urlsplit(base_url())
+    base = urllib.parse.urlsplit(required_base_url())
     target = base.path + path
     if query:
         target += "?" + urllib.parse.urlencode(query)
 
     data = json.dumps(body).encode() if body is not None else None
-    headers = {"Authorization": f"Bearer {bearer}"} if bearer else {"X-App-Secret": app_secret()}
+    secret = app_secret_if_set() if bearer else app_secret()
+    headers = {"X-App-Secret": secret} if secret else {}
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
     if credential:
         headers["Authorization"] = f"Bearer {credential}"
     if data is not None:
@@ -148,15 +127,15 @@ def _request(
     if ua:
         headers["User-Agent"] = ua
     if ip:
-        headers["X-Forwarded-For"] = ip
+        headers["Stackure-Client-IP"] = ip
     if token:
-        headers["Cookie"] = f"{SESSION_COOKIE}={token}"
+        headers["Cookie"] = f"{PLATFORM_COOKIE}={token}"
 
     cls = http.client.HTTPSConnection if base.scheme == "https" else http.client.HTTPConnection
-    deadline = time.monotonic() + _REQUEST_TIMEOUT_S
-    for attempt in range(_MAX_RETRIES + 1):
+    deadline = time.monotonic() + REQUEST_TIMEOUT_S
+    for attempt in range(MAX_RETRIES + 1):
         if attempt:
-            time.sleep(_RETRY_DELAY_S)
+            time.sleep(RETRY_DELAY_S)
         conn = None
         try:
             conn = cls(base.netloc, timeout=_left(deadline))
@@ -172,13 +151,13 @@ def _request(
         except TimeoutError as exc:
             raise _timeout() from exc
         except (OSError, http.client.HTTPException) as exc:
-            if not _can_retry(attempt, deadline, once):
+            if not _can_retry(method, attempt, deadline):
                 raise StackureError("network", f"network request failed: {exc}") from exc
             continue
         finally:
             if conn:
                 conn.close()
-        if status >= 500 and _can_retry(attempt, deadline, once):
+        if status >= 500 and _can_retry(method, attempt, deadline):
             continue
         return _handle_response(status, payload, parse)
 
@@ -205,7 +184,7 @@ def cookie(request: Request, name: str) -> str:
 
 def session_token(request: Request) -> str:
     """The session token from the app's session cookie."""
-    return cookie(request, APP_COOKIE)
+    return cookie(request, SESSION_COOKIE)
 
 
 def _user(data: Any) -> User | None:
@@ -261,7 +240,7 @@ def send_magic_link(email: str) -> MagicLinkResponse:
     """
     validate_email(email)
     body = {"user_email": email, "app_id": app_id()}
-    data = _request("POST", "/api/public/auth/magic-link/send", body=body)
+    data = _request("POST", MAGIC_LINK_PATH, body=body)
     try:
         return MagicLinkResponse(message=data["message"])
     except (KeyError, TypeError) as exc:
@@ -284,12 +263,12 @@ def validate_token(
     if not is_uuid(token) and not dev:
         session = Session(
             authenticated=False,
-            sign_in_url=f"{base_url()}/sign-in/magic-link?app_id={app}",
+            sign_in_url=f"{required_base_url()}{SIGN_IN_PAGE}?app_id={app}",
         )
         return session, 0
 
     data = _get_with_session(
-        "/api/public/auth/session/validate",
+        VALIDATE_PATH,
         {"app_id": app, **(dev or {})},
         token if is_uuid(token) else "",
         request,
@@ -319,9 +298,8 @@ def exchange_code(code: str, verifier: str, request: Request) -> str:
     """
     data = _request(
         "POST",
-        "/api/public/auth/session/exchange",
+        EXCHANGE_PATH,
         body={"app_id": app_id(), "code": code, "verifier": verifier},
-        once=True,
         ua=request.headers.get("user-agent", ""),
         ip=client_ip(request),
     )
@@ -336,7 +314,7 @@ def fetch_directory_users(
 ) -> DirectoryPage[DirectoryUser]:
     """One page of the users in the caller's organization who can open the app."""
     return _fetch_directory(
-        "/api/public/directory/users", _directory_user, request, query, cursor, limit, ids
+        DIRECTORY_USERS_PATH, _directory_user, request, query, cursor, limit, ids
     )
 
 
@@ -345,7 +323,7 @@ def fetch_directory_teams(
 ) -> DirectoryPage[Team]:
     """One page of the teams in the caller's organization that have the app."""
     return _fetch_directory(
-        "/api/public/directory/teams", _team, request, query, cursor, limit, ids
+        DIRECTORY_TEAMS_PATH, _team, request, query, cursor, limit, ids
     )
 
 
@@ -422,7 +400,7 @@ def validate_mcp(url: str, token: str, request: Request) -> tuple[User | None, s
     """
     data = _request(
         "GET",
-        "/api/public/auth/session/validate",
+        VALIDATE_PATH,
         query={"app_id": app_id(), "mcp": url},
         credential=token if is_uuid(token) else "",
         ua=request.headers.get("user-agent", ""),
@@ -435,7 +413,8 @@ def validate_mcp(url: str, token: str, request: Request) -> tuple[User | None, s
 def sign_out(token: str, request: Request) -> None:
     """End the user's access everywhere, authorized by the app session ``token``.
 
-    A token that is not well formed is never sent. Any 2xx status is success;
+    The app secret is sent too when it's set; without it the call still goes
+    out. A token that is not well formed is never sent. Any 2xx status is success;
     the response body is neither read nor parsed.
 
     Raises:
@@ -445,7 +424,7 @@ def sign_out(token: str, request: Request) -> None:
         return
     _request(
         "POST",
-        "/api/public/auth/sign-out",
+        SIGN_OUT_PATH,
         bearer=token,
         ua=request.headers.get("user-agent", ""),
         ip=client_ip(request),
